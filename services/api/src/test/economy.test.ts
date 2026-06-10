@@ -54,9 +54,9 @@ describe("idle accrual", () => {
       as(session, { method: "POST", url: `/game/characters/${charId}/claim-idle` }),
     );
     expect(claim.statusCode).toBe(200);
-    // corner-store 30/h * 24h cap (level 1) = 720 SHINY.
-    expect(BigInt(claim.json().amount)).toBe(toBaseUnits(720));
-    expect((await userBalance(app, session.userId)) - before).toBe(toBaseUnits(720));
+    // corner-store 4/h (S1 v2) * 24h cap (level 1) = 96 SHINY.
+    expect(BigInt(claim.json().amount)).toBe(toBaseUnits(96));
+    expect((await userBalance(app, session.userId)) - before).toBe(toBaseUnits(96));
     expect(await ledgerTotal(app)).toBe(0n);
 
     // Unstationed characters can't claim.
@@ -174,12 +174,12 @@ describe("admin tuning ratchet", () => {
     const { users } = await import("@trash-wars/db");
     await app.ctx.db.update(users).set({ role: "admin" }).where(eq(users.id, admin.userId));
 
-    // Decrease idle rate: immediate.
+    // Decrease idle rate (4/h -> 2/h): immediate.
     const down = await app.inject(
       as(admin, {
         method: "POST",
         url: "/admin/tune",
-        payload: { locationSlug: "corner-store", patch: { idleRatePerHour: toBaseUnits(20).toString() } },
+        payload: { locationSlug: "corner-store", patch: { idleRatePerHour: toBaseUnits(2).toString() } },
       }),
     );
     expect(down.statusCode).toBe(200);
@@ -189,7 +189,7 @@ describe("admin tuning ratchet", () => {
       .from(locations)
       .where(eq(locations.slug, "corner-store"));
     expect((loc[0]!.config as { idleRatePerHour: string }).idleRatePerHour).toBe(
-      toBaseUnits(20).toString(),
+      toBaseUnits(2).toString(),
     );
 
     // Increase idle rate: pending for 48h, config untouched.
@@ -197,7 +197,7 @@ describe("admin tuning ratchet", () => {
       as(admin, {
         method: "POST",
         url: "/admin/tune",
-        payload: { locationSlug: "corner-store", patch: { idleRatePerHour: toBaseUnits(40).toString() } },
+        payload: { locationSlug: "corner-store", patch: { idleRatePerHour: toBaseUnits(8).toString() } },
       }),
     );
     expect(up.statusCode).toBe(200);
@@ -207,7 +207,7 @@ describe("admin tuning ratchet", () => {
       .from(locations)
       .where(eq(locations.slug, "corner-store"));
     expect((still[0]!.config as { idleRatePerHour: string }).idleRatePerHour).toBe(
-      toBaseUnits(20).toString(),
+      toBaseUnits(2).toString(),
     );
 
     // After the timelock elapses, the sweep applies it.
@@ -221,7 +221,7 @@ describe("admin tuning ratchet", () => {
       .from(locations)
       .where(eq(locations.slug, "corner-store"));
     expect((after[0]!.config as { idleRatePerHour: string }).idleRatePerHour).toBe(
-      toBaseUnits(40).toString(),
+      toBaseUnits(8).toString(),
     );
   });
 

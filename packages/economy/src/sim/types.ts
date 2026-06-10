@@ -48,20 +48,37 @@ export interface DayRow extends Ledger {
   dailyBurned: bigint;
   dailyRake: bigint;
   dailyPdDistributed: bigint;
+  /** Patrol bounties paid straight from confiscated stakes to patrolling hounds. */
+  dailyPatrolBounty: bigint;
   dailyWinExcess: bigint;
   dailyIdle: bigint;
+  /** Emission payouts requested before the daily clamp (win excess + idle demand). */
+  dailyEmissionDemand: bigint;
+  /** Lost-stake volume (confiscation + rekt) routed through bounty/burn/PD. */
+  dailyLossVolume: bigint;
+  /** Total stake volume across all missions today. */
+  dailyStakeVolume: bigint;
   missions: number;
   arrests: number;
   confiscations: number;
   rekts: number;
+  /** Bloodhounds minted and alive (owner may be inactive today). */
+  livingHounds: number;
+  /** Bloodhounds actively staked/patrolling today. */
+  stakedHounds: number;
   /** True when emission demand exceeded the day's budget (payouts were capped). */
   budgetShortfall: boolean;
   /** (dailyEmissions - dailyBurned) / circulating, in bps. Reporting only. */
   netInflationBps: number;
-  /** PD redistribution as a share of gross player earnings, in bps. Reporting only. */
+  /** (PD distributions + patrol bounties) as a share of gross player earnings, in bps. */
   redistributionShareBps: number;
-  /** Annualized PD yield on bloodhound mint capital, in bps. Reporting only. */
+  /**
+   * Bloodhound APR per the owner definition: annualized (pd distributions +
+   * patrol bounties) / (living bloodhound count * 60k mint price), in bps.
+   */
   pdAprBps: number;
+  /** Same numerator over actively staked hounds only (decay-scenario view). */
+  pdAprStakedBps: number;
 }
 
 export interface SimResult {

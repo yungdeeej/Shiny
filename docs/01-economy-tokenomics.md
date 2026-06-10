@@ -39,22 +39,34 @@ Unemitted season budget rolls into reserve, never forward. Published as policy.
 | Character mint (Raccoon) | 25,000 $SHINY | 100% burn |
 | Character mint (Bloodhound, capped 10% of pop) | 60,000 $SHINY | 100% burn |
 | Stat upgrade (per level, exponential ×1.35) | 500 base | 100% burn |
-| Mission entry stake (token-tier missions) | player-set | at-risk (lost share burned 50% / PD pool 50%) |
-| Jail bail (skip 24h) | 1,500 | 75% burn / 25% PD pool |
+| Mission entry stake (token-tier missions) | player-set, per-location caps below | at-risk (lost share burned 99.5% / PD pool 0.5%) (tuned v2) |
+| Mission insurance (rekt cover, pre-mission) | 16–28% of stake by tier (tuned v2) | 100% burn |
+| Jail bail (skip 24h) | 1,500 | 99% burn / 1% PD pool (tuned v2) |
 | Cosmetics (token-priced items) | varies | 100% burn |
 | Raffle tickets (recruitment, cosmetics) | 1,000/ticket | 100% burn |
 | Marketplace fee | 10% of sale | 50% burn / 50% treasury |
 | **Withdrawal tax** | **5%** | **treasury (team revenue) — this is the rake** |
 | Name change / den customization | 250–2,500 | burn |
 
+> (tuned v2) Loss/bail routing dropped from 50%/25% PD shares to 0.5%/1% slivers: with
+> bloodhound supply capped at 10% of characters, the 35–45% APR target on 60k mint
+> capital only admits ~13k $SHINY/day of total hound income at 2k DAU — everything
+> else burns. Patrolling shifts additionally collect a 1% bounty on confiscations on
+> their beat (was 40%).
+
 ### Faucets
-1. Idle accrual: staked characters earn $SHINY/hr by location (from season budget).
+1. Idle accrual: staked characters earn $SHINY/hr by location (from season budget) —
+   4 / 6 / 8 / 10 / 12 / 15 per hour up the tier ladder, +10% per character level (tuned v2,
+   was 30–200/hr: idle alone exceeded the daily budget at 2k DAU).
 2. Mission payouts: multiplier wins (from season budget).
-3. PD confiscation pool: Bloodhounds earn **redistributed** Raccoon losses — zero-emission yield.
-   This is the core sustainability upgrade over The Heist: a growing share of "yield" is PvP
-   redistribution, not printing. Target: ≥30% of gross player earnings are redistribution by S2.
+3. PD confiscation pool: Bloodhounds earn **redistributed** Raccoon losses — zero-emission yield
+   (0.5% of lost stakes + 1% of bail to the pool, plus the 1% patrol bounty; tuned v2 to hold the
+   35–45% APR band). This is the core sustainability upgrade over The Heist: a growing share of
+   "yield" is PvP redistribution, not printing. Target: ≥30% of gross player earnings are
+   redistribution as season emissions taper (late S1 → S2).
 4. Free tier: wallet holding ≥10,000 $SHINY (not staked, just held) can run 1 token-stake mission
-   per 8h. Funnel without an NFT gate; balance check also drives buy pressure.
+   per 8h, stake = min(holding × 0.1, 500) (tuned v2, was 5,000). Funnel without an NFT gate;
+   balance check also drives buy pressure.
 
 ### Mission probability tables (S1, character missions)
 
@@ -62,14 +74,19 @@ EV stated in payout-multiple of the at-risk stake. "Confiscation" = staked loot 
 "Rekt" tiers: items → equipped item lost; character → NFT burned (with 24h insurance window
 purchasable pre-mission — another sink).
 
-| Location | Duration | Win | Multiplier | Nothing | Arrest (24h jail) | Confiscation | Rekt | EV |
-|---|---|---|---|---|---|---|---|---|
-| Corner Store | 2h | 70% | 1.4× | 25% | 5% | 0% | 0% | 0.98 |
-| Pawn Shop | 4h | 55% | 1.8× | 28% | 12% | 5% | 0% | 0.99 |
-| Jewelry District | 6h | 45% | 2.4× | 25% | 18% | 10% | 2% items | 1.08→tuned |
-| Armored Truck | 8h | 35% | 3.2× | 25% | 22% | 13% | 5% items | ~1.12 |
-| First National | 12h | 25% | 5× | 25% | 25% | 17% | 6% char w/o insurance | ~1.25 |
-| The Mint (jackpot) | 24h | 12% ×5 / 3% ×12 | — | 30% | 30% | 18% | 7% char | ~0.96–1.3 |
+Table below is the shipped S1 config (tuned v2 — sim-validated at 2k DAU, seed 42: zero
+clamp days, ≤+0.15%/day net inflation by day 60, bloodhound APR 35–38%). v2 keeps each
+tier's EV anchor but trades multiplier for win% (lower emission cost per stake), and cuts
+stake caps ~100x so saturated demand fits the 2.33M/day budget.
+
+| Location | Duration | Win | Multiplier | Nothing | Arrest (24h jail) | Confiscation | Rekt | EV | Stake min–max | Idle/hr |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Corner Store | 2h | 70% | 1.4× | 25% | 5% | 0% | 0% | 0.98 | 100–500 (tuned v2) | 4 |
+| Pawn Shop | 4h | 65% (v2, was 55%) | 1.52× (v2, was 1.8×) | 18% | 11% | 6% | 0% | 0.99 | 250–750 | 6 |
+| Jewelry District | 6h | 52% (v2, was 45%) | 1.94× (v2, was 2.4×) | 15% | 18% | 12% | 3% items | 1.01 (v2, was 1.08) | 400–900 | 8 |
+| Armored Truck | 8h | 42% (v2, was 35%) | 2.45× (v2, was 3.2×) | 12% | 22% | 18% | 6% items | 1.03 (v2, was ~1.12) | 500–1,000 | 10 |
+| First National | 12h | 25% | 4.2× (v2, was 5×) | 18% | 25% | 22% | 3% items + 7% char w/o insurance | 1.05 (v2, was ~1.25) | 600–1,000 | 12 |
+| The Mint (jackpot) | 24h | 15% ×4.6 / 3% ×10 (v2, was 12% ×5 / 3% ×12) | — | 21% | 29% | 24% | 8% char | 0.99 | 750–1,250 | 15 |
 
 Stats shift these: **Stealth** −arrest%, **Muscle** +multiplier, **Luck** +jackpot%, PD **Reputation**
 +confiscation share. Tables are config rows in Postgres, hot-tunable from admin (doc 09), with the
@@ -101,10 +118,10 @@ CONTEXT
 - Sinks: character mint 25k (raccoon) / 60k (bloodhound, max 10% of character population),
   stat upgrades 500 * 1.35^level, jail bail 1.5k, raffle tickets 1k, cosmetics avg 800,
   withdrawal tax 5%. All burns except withdrawal tax (treasury) and the PD pool routing:
-  50% of lost mission stakes are burned, 50% go to a PD confiscation pool paid to Bloodhound
-  stakers pro-rata daily.
+  99.5% of lost mission stakes are burned, 0.5% go to a PD confiscation pool paid to Bloodhound
+  stakers pro-rata daily (tuned v2 — was 50/50; see POLICY.lossSplit).
 - Free tier: wallets holding >=10k $SHINY may run one token-stake mission per 8h (Corner Store
-  table, stake = min(holding*0.1, 5k)).
+  table, stake = min(holding*0.1, 500)) (tuned v2 — was 5k).
 
 BUILD
 1. packages/economy/src/config/season1.ts — typed config: locations, probabilities, multipliers,
@@ -146,5 +163,6 @@ budget exhausts day 61 at 2k DAU — reduce multiplier to 4.2x").
 - Simulator runs deterministic 180-day scenarios in <60s
 - Ledger conservation test passes (no token leaks)
 - A tuned `season1.ts` exists where: budget lasts ≥90 days at 2k DAU, net inflation ≤0.15%/day of
-  circulating by day 60, PD APR stays 15–60% band, treasury rake ≥1.5% of daily volume
+  circulating by day 60, PD APR settles in the 35–45% band (≥15% on staked hounds under DAU decay)
+  (tuned v2 — was "15–60%"), treasury rake ≥1.5% of daily volume
 - You can defend every number in a public AMA

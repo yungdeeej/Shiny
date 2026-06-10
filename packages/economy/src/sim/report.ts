@@ -34,12 +34,19 @@ const CSV_COLUMNS = [
   "dailyBurned",
   "dailyRake",
   "dailyPdDistributed",
+  "dailyPatrolBounty",
   "dailyWinExcess",
   "dailyIdle",
+  "dailyEmissionDemand",
+  "dailyLossVolume",
+  "dailyStakeVolume",
+  "livingHounds",
+  "stakedHounds",
   "budgetShortfall",
   "netInflationBps",
   "redistributionShareBps",
   "pdAprBps",
+  "pdAprStakedBps",
 ] as const;
 
 export function renderCsv(result: SimResult): string {
@@ -92,6 +99,32 @@ export function renderMarkdown(result: SimResult): string {
   lines.push("");
 
   if (last) {
+    const trailing = (n: number, pick: (r: DayRow) => number): number => {
+      const window = rows.slice(-n);
+      return window.length > 0 ? window.reduce((s, r) => s + pick(r), 0) / window.length : 0;
+    };
+    const s1Rows = rows.slice(0, 90);
+    const clampDays = s1Rows.filter((r) => r.budgetShortfall).length;
+    const day60 = rows[60];
+    const day89 = rows[89];
+
+    lines.push("## Owner targets (measured)");
+    lines.push("");
+    lines.push(
+      `- Bloodhound APR, trailing 30d (living hounds × 60k): **${pct(Math.round(trailing(30, (r) => r.pdAprBps)))}**` +
+        ` · staked-hounds basis: ${pct(Math.round(trailing(30, (r) => r.pdAprStakedBps)))}`,
+    );
+    lines.push(
+      `- Daily emissions clamp engaged on **${clampDays}/${Math.min(rows.length, 90)} S1 days**; ` +
+        `budget remaining end of day 89: ${day89 ? shiny(day89.emissionsRemaining) : "n/a"} SHINY`,
+    );
+    lines.push(
+      `- Net inflation day 60: ${day60 ? pct(day60.netInflationBps) : "n/a"} · trailing 30d: ${pct(Math.round(trailing(30, (r) => r.netInflationBps)))}`,
+    );
+    lines.push(
+      `- Redistribution share of gross earnings — day 89: ${day89 ? pct(day89.redistributionShareBps) : "n/a"} · trailing 30d: ${pct(Math.round(trailing(30, (r) => r.redistributionShareBps)))}`,
+    );
+    lines.push("");
     lines.push("## Summary (end of run)");
     lines.push("");
     lines.push(`- Circulating: **${shiny(last.circulating)} SHINY**`);
@@ -106,7 +139,10 @@ export function renderMarkdown(result: SimResult): string {
     lines.push(`- PD pool balance: **${shiny(last.pdPool)} SHINY**`);
     lines.push(`- Final-day net inflation: ${pct(last.netInflationBps)} of circulating`);
     lines.push(`- Final-day redistribution share of player earnings: ${pct(last.redistributionShareBps)}`);
-    lines.push(`- Final-day PD APR: ${pct(last.pdAprBps)}`);
+    lines.push(
+      `- Final-day PD APR: ${pct(last.pdAprBps)} on ${last.livingHounds} living hounds ` +
+        `(${pct(last.pdAprStakedBps)} on ${last.stakedHounds} staked)`,
+    );
     lines.push("");
   }
 
@@ -120,15 +156,15 @@ export function renderMarkdown(result: SimResult): string {
   lines.push("## Daily samples (whole SHINY)");
   lines.push("");
   lines.push(
-    "| Day | DAU | Missions | Emitted | Burned | Rake | PD dist | PD pool | Circulating | Net infl | Redist | Shortfall |",
+    "| Day | DAU | Missions | Demand | Emitted | Burned | Hound income | Circulating | Net infl | Redist | APR | Shortfall |",
   );
   lines.push("|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const r of sampleRows(rows)) {
     lines.push(
-      `| ${r.day} | ${r.dau} | ${r.missions} | ${shiny(r.dailyEmissions)} | ${shiny(r.dailyBurned)} | ` +
-        `${shiny(r.dailyRake)} | ${shiny(r.dailyPdDistributed)} | ${shiny(r.pdPool)} | ` +
+      `| ${r.day} | ${r.dau} | ${r.missions} | ${shiny(r.dailyEmissionDemand)} | ${shiny(r.dailyEmissions)} | ` +
+        `${shiny(r.dailyBurned)} | ${shiny(r.dailyPdDistributed + r.dailyPatrolBounty)} | ` +
         `${shiny(r.circulating)} | ${pct(r.netInflationBps)} | ${pct(r.redistributionShareBps)} | ` +
-        `${r.budgetShortfall ? "yes" : ""} |`,
+        `${pct(r.pdAprBps)} | ${r.budgetShortfall ? "yes" : ""} |`,
     );
   }
   lines.push("");

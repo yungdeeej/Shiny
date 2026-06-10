@@ -26,9 +26,9 @@ afterAll(async () => {
 // Survivable locations only (no rekt_character) so the same characters can grind
 // all rounds; jail is handled with bail.
 const LOCATIONS = [
-  { slug: "corner-store", min: 100n, max: 10_000n },
-  { slug: "pawn-shop", min: 250n, max: 25_000n },
-  { slug: "jewelry-district", min: 500n, max: 50_000n },
+  { slug: "corner-store", min: 100n, max: 500n },
+  { slug: "pawn-shop", min: 250n, max: 750n },
+  { slug: "jewelry-district", min: 400n, max: 900n },
 ] as const;
 const UNIT = 1_000_000n;
 

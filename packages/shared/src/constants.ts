@@ -18,14 +18,17 @@ export const POLICY = {
   bloodhoundCapBps: 1_000, // 10% of living characters
   freeTierMinHolding: toBaseUnits(10_000),
   freeTierCooldownHours: 8,
-  freeTierMaxStake: toBaseUnits(5_000),
+  freeTierMaxStake: toBaseUnits(500), // S1 v2: was 5k — 600 free-tier players compounding to 5k stakes overran the budget
   jailHours: 24,
   idleClaimCapHours: 24,
-  bailSplit: { burnBps: 7_500, pdBps: 2_500 },
-  lossSplit: { burnBps: 5_000, pdBps: 5_000 },
+  // S1 tuning v2: hound income is bounded by the 35-45% APR band on 60k mint
+  // capital (~13k SHINY/day at 2k DAU), so the PD routing shares are deliberately
+  // thin slivers of the (much larger) daily loss flows. Everything else burns.
+  bailSplit: { burnBps: 9_900, pdBps: 100 }, // was 75/25 — bail volume is huge, so 1% is plenty
+  lossSplit: { burnBps: 9_950, pdBps: 50 }, // was 50/50 — primary APR lever
   bribeSplit: { burnBps: 7_500, patrolBps: 2_500 },
   patrolShiftHours: 6,
-  patrolBountyBps: 4_000, // 40% of patrolled-location confiscations to the shift
+  patrolBountyBps: 100, // 1% of patrolled-location confiscations to the shift (was 40%)
   pdDailyDistributionBps: 8_000, // distribute 80% of pool, keep 20% buffer
   insuranceCutoffMinutes: 5,
   statLevelCapS1: 10,

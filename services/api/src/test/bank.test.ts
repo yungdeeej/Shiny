@@ -77,6 +77,16 @@ describe("withdrawals", () => {
 
   it("counts mission-locked stakes against the withdrawable balance", async () => {
     const session = await guest(app, "locked_racc");
+    // Drain to 10k, then lock 1k (the S1 v2 first-national cap) so the 10k
+    // withdrawal below exceeds the remaining unlocked 9k.
+    const drain = await app.inject(
+      as(session, {
+        method: "POST",
+        url: "/bank/withdraw",
+        payload: { amount: toBaseUnits(90_000).toString(), destAddress: DEST },
+      }),
+    );
+    expect(drain.statusCode).toBe(200);
     const chars = await app.inject(as(session, { method: "GET", url: "/game/characters" }));
     const start = await app.inject(
       as(session, {
@@ -85,7 +95,7 @@ describe("withdrawals", () => {
         payload: {
           locationSlug: "first-national",
           characterId: chars.json()[0].id,
-          stake: toBaseUnits(95_000).toString(),
+          stake: toBaseUnits(1_000).toString(),
         },
       }),
     );

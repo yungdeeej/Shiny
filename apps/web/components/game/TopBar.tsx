@@ -7,6 +7,7 @@ import React, { useState } from "react";
 import { useGameClientSafe } from "../../lib/client/provider";
 import { useMe } from "../../lib/hooks";
 import { useUiStore } from "../../lib/uiStore";
+import { disconnectWallet, truncateAddress } from "../../lib/walletStore";
 import { Logo } from "../art/Logo";
 import { BalancePill } from "../ui/BalancePill";
 import { SeasonTimer } from "../ui/SeasonTimer";
@@ -19,6 +20,9 @@ export function TopBar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const soundOn = useUiStore((s) => s.soundOn);
   const toggleSound = useUiStore((s) => s.toggleSound);
+
+  const wallet = me?.wallets.find((w) => w.isPrimary) ?? me?.wallets[0];
+  const cluster = process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet";
 
   return (
     <header className="glass sticky top-0 z-50 flex h-14 items-center gap-3 border-x-0 border-t-0 px-3 sm:px-5">
@@ -57,6 +61,16 @@ export function TopBar() {
             </button>
             {menuOpen && (
               <div className="card absolute right-0 top-11 z-50 w-48 p-1.5 text-sm shadow-sheet" role="menu">
+                {wallet && (
+                  <div className="mb-1 flex items-center justify-between gap-2 border-b border-line px-3 pb-2 pt-1.5">
+                    <span className="font-mono text-xs" title={wallet.address}>
+                      {truncateAddress(wallet.address)}
+                    </span>
+                    <span className="rounded-full border border-accent/40 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-accent">
+                      {cluster}
+                    </span>
+                  </div>
+                )}
                 <Link href="/verify" className="block rounded-lg px-3 py-2 hover:bg-surface2" onClick={() => setMenuOpen(false)}>
                   Verify fairness
                 </Link>
@@ -80,11 +94,12 @@ export function TopBar() {
                   onClick={async () => {
                     setMenuOpen(false);
                     await client?.logout();
+                    await disconnectWallet();
                     qc.clear();
                     router.push("/onboarding");
                   }}
                 >
-                  Burn this identity
+                  {wallet ? "Disconnect" : "Burn this identity"}
                 </button>
               </div>
             )}

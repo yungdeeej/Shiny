@@ -14,7 +14,7 @@ import {
   splitLoss,
   SEASON1,
 } from "@trash-wars/economy";
-import { applyBps, type MissionOutcome } from "@trash-wars/shared";
+import { applyBps, POLICY, type MissionOutcome } from "@trash-wars/shared";
 import {
   characters,
   missionOutcomes,
@@ -34,7 +34,6 @@ import { utcDayKey } from "./time.js";
 import { getLocation, activePatrolsAt } from "./locations.js";
 import { amountBand, publishFeed } from "./feed.js";
 
-const PATROL_BOUNTY_BPS = 4_000; // 40% of confiscations to the patrolling shift
 const JAIL_GAME_HOURS = 24;
 /** Patrol weights are doubles; scale to integer thousandths for bigint share math. */
 const WEIGHT_SCALE = 1_000;
@@ -165,7 +164,7 @@ export async function settleMission(
       const shift = await activePatrolsAt(ctx, mission.locationSlug, now);
       let paidToHounds = 0n;
       if (shift.length > 0) {
-        const bountyTotal = applyBps(stake, PATROL_BOUNTY_BPS);
+        const bountyTotal = applyBps(stake, POLICY.patrolBountyBps);
         // Anti-collusion: hounds whose owner shares a sybil cluster with the
         // confiscated raccoon forfeit their share to the global pd_pool.
         const myClusters = await ctx.db
@@ -211,7 +210,14 @@ export async function settleMission(
         }
         detail.patrolBounty = { paid: paidToHounds.toString(), hounds: shift.length };
       }
-      add(sys.pd_pool, stake - paidToHounds);
+      {
+        // S1 v2: confiscations are loss flows like rekts — the remainder after
+        // patrol bounties routes through splitLoss (burn-heavy, PD sliver), or
+        // the tuned 35-45% hound APR band blows out ~100x.
+        const { burn, pd } = splitLoss(stake - paidToHounds);
+        add(sys.burn_pool, burn);
+        add(sys.pd_pool, pd);
+      }
       break;
     }
     case "rekt_items":

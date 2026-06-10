@@ -188,8 +188,10 @@ export function runSim(options: SimOptions): SimResult {
 
     const dayBudget = SEASON1.dailyBudget <= emissionsRemaining ? SEASON1.dailyBudget : emissionsRemaining;
     let spent = 0n;
+    let demanded = 0n;
     let shortfall = false;
     const payFromBudget = (amount: bigint): bigint => {
+      demanded += amount;
       const room = dayBudget - spent;
       const pay = amount <= room ? amount : room;
       if (pay < amount) shortfall = true;
@@ -201,6 +203,9 @@ export function runSim(options: SimOptions): SimResult {
     const treasuryAtStart = ledger.treasury;
     let winExcess = 0n;
     let idlePaid = 0n;
+    let bountyPaid = 0n;
+    let lossVolume = 0n;
+    let stakeVolume = 0n;
     let missions = 0;
     let arrests = 0;
     let confiscations = 0;
@@ -258,6 +263,13 @@ export function runSim(options: SimOptions): SimResult {
       if (profile.rotation.length === 0) continue;
 
       let jailedNow = false;
+      // Per-character-day idle accounting: a character can idle at most the hours
+      // it is not on a mission. We accrue rate-weighted naive idle per mission and
+      // scale it down to the player's true idle capacity afterwards (fixes the old
+      // per-mission overcount: 3 corner-store runs used to pay 3 * 22h of idle).
+      let missionHours = 0;
+      let naiveIdleHours = 0;
+      let idleWeighted = 0n;
       for (let m = 0; m < missionsToday && !jailedNow; m++) {
         const slug = profile.rotation[(p.activeDays + m) % profile.rotation.length];
         if (slug === undefined) break;
@@ -299,6 +311,7 @@ export function runSim(options: SimOptions): SimResult {
         const row = resolveMission(table, roll);
         const payout = computePayout(stake, row);
         missions += 1;
+        stakeVolume += stake;
 
         switch (row.outcome) {
           case "win":
@@ -328,7 +341,21 @@ export function runSim(options: SimOptions): SimResult {
           case "confiscation":
           case "rekt_items":
           case "rekt_character": {
-            const { burn: b, pd } = splitLoss(stake);
+            lossVolume += stake;
+            let toSplit = stake;
+            // Patrol bounty: a slice of confiscated stakes goes straight to the
+            // patrolling shift (POLICY.patrolBountyBps), split evenly here.
+            if (row.outcome === "confiscation" && activeFarmers.length > 0) {
+              const bounty = applyBps(stake, POLICY.patrolBountyBps);
+              const share = bounty / BigInt(activeFarmers.length);
+              if (share > 0n) {
+                for (const f of activeFarmers) f.balance += share;
+                const paid = share * BigInt(activeFarmers.length);
+                bountyPaid += paid;
+                toSplit -= paid;
+              }
+            }
+            const { burn: b, pd } = splitLoss(toSplit);
             ledger.burned += b;
             ledger.pdPool += pd;
             if (row.outcome === "confiscation") confiscations += 1;
@@ -340,15 +367,24 @@ export function runSim(options: SimOptions): SimResult {
           }
         }
 
-        // idle accrual for the character that ran this mission (rest of the day)
-        if (!isFreeTier && p.characters > 0 && !jailedNow) {
-          const idleHours = Math.max(0, 24 - Math.ceil(loc.durationHours));
-          if (idleHours > 0) {
-            const accrued = idleRatePerHour(loc, p.level) * BigInt(idleHours);
-            const paid = payFromBudget(accrued);
-            p.balance += paid;
-            idlePaid += paid;
-          }
+        // accrue naive idle for the character that ran this mission
+        missionHours += Math.ceil(loc.durationHours);
+        const idleHours = Math.max(0, 24 - Math.ceil(loc.durationHours));
+        if (idleHours > 0) {
+          naiveIdleHours += idleHours;
+          idleWeighted += idleRatePerHour(loc, p.level) * BigInt(idleHours);
+        }
+      }
+
+      // idle accrual, capped at the player's true idle character-hours for the day
+      if (!isFreeTier && p.characters > 0 && !jailedNow && naiveIdleHours > 0) {
+        const trueIdleHours = Math.max(0, 24 * p.characters - missionHours);
+        const hours = Math.min(naiveIdleHours, trueIdleHours);
+        if (hours > 0) {
+          const accrued = (idleWeighted * BigInt(hours)) / BigInt(naiveIdleHours);
+          const paid = payFromBudget(accrued);
+          p.balance += paid;
+          idlePaid += paid;
         }
       }
 
@@ -416,8 +452,16 @@ export function runSim(options: SimOptions): SimResult {
     const dailyBurned = ledger.burned - burnedAtStart;
     const dailyRake = ledger.treasury - treasuryAtStart;
     const circulating = ledger.deposited + ledger.emissionsSpent - ledger.burned;
-    const gross = winExcess + idlePaid + pdDistributed;
-    const farmerCapital = BigInt(farmers.length) * SINKS.mintBloodhound;
+    const houndIncome = pdDistributed + bountyPaid;
+    const gross = winExcess + idlePaid + houndIncome;
+    // APR per owner definition: annualized hound income over (living hounds * 60k).
+    let livingHounds = 0;
+    for (const p of players) {
+      if (p.archetype === "pd_farmer" && p.onboarded && p.characters > 0) livingHounds += 1;
+    }
+    const stakedHounds = farmers.length;
+    const livingCapital = BigInt(livingHounds) * SINKS.mintBloodhound;
+    const stakedCapital = BigInt(stakedHounds) * SINKS.mintBloodhound;
 
     rows.push({
       day,
@@ -430,27 +474,40 @@ export function runSim(options: SimOptions): SimResult {
       dailyBurned,
       dailyRake,
       dailyPdDistributed: pdDistributed,
+      dailyPatrolBounty: bountyPaid,
       dailyWinExcess: winExcess,
       dailyIdle: idlePaid,
+      dailyEmissionDemand: demanded,
+      dailyLossVolume: lossVolume,
+      dailyStakeVolume: stakeVolume,
       missions,
       arrests,
       confiscations,
       rekts,
+      livingHounds,
+      stakedHounds,
       budgetShortfall: shortfall,
       netInflationBps: circulating > 0n ? Number(((spent - dailyBurned) * 10_000n) / circulating) : 0,
-      redistributionShareBps: gross > 0n ? Number((pdDistributed * 10_000n) / gross) : 0,
-      pdAprBps: farmerCapital > 0n ? Number((pdDistributed * 365n * 10_000n) / farmerCapital) : 0,
+      redistributionShareBps: gross > 0n ? Number((houndIncome * 10_000n) / gross) : 0,
+      pdAprBps: livingCapital > 0n ? Number((houndIncome * 365n * 10_000n) / livingCapital) : 0,
+      pdAprStakedBps: stakedCapital > 0n ? Number((houndIncome * 365n * 10_000n) / stakedCapital) : 0,
     });
   }
 
   if (firstShortfallDay >= 0) {
     notes.push(
       `Budget shortfall: daily emission demand first exceeded the ${SEASON1.dailyBudget} base-unit ` +
-        `daily budget on day ${firstShortfallDay} — win/idle payouts were capped from then on.`,
+        `daily budget on day ${firstShortfallDay}.`,
     );
   } else {
     notes.push("Daily emission budget was never exhausted intra-day.");
   }
+  const s1Days = Math.min(rows.length, SEASON1.days);
+  const s1ClampDays = rows.slice(0, s1Days).filter((r) => r.budgetShortfall).length;
+  notes.push(
+    `Daily emissions clamp engaged on ${s1ClampDays}/${s1Days} S1 days ` +
+      `(${((100 * s1ClampDays) / Math.max(1, s1Days)).toFixed(1)}%).`,
+  );
   if (exhaustedDay >= 0) notes.push(`Season emissions reserve fully exhausted on day ${exhaustedDay}.`);
   const last = rows[rows.length - 1];
   if (last) {

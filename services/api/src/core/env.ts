@@ -31,6 +31,11 @@ const rawEnv = z.object({
   DEPOSIT_ADDRESS: z.string().default("BETA-DEPOSIT"),
   HELIUS_WEBHOOK_SECRET: z.string().default(""),
 
+  // Devnet chain provider (used when BETA_MODE=0; both required for real reads).
+  SOLANA_RPC_URL: z.string().optional(),
+  SHINY_MINT: z.string().optional(),
+  MULTISIG_ATA: z.string().optional(),
+
   RATE_LIMIT_MAX: z.coerce.number().int().default(300),
   LOG_LEVEL: z.string().default("info"),
 });
@@ -56,6 +61,9 @@ export interface Env {
   globalDailyWithdrawalCap: bigint;
   depositAddress: string;
   heliusWebhookSecret: string;
+  solanaRpcUrl: string | undefined;
+  shinyMint: string | undefined;
+  multisigAta: string | undefined;
   rateLimitMax: number;
   logLevel: string;
 }
@@ -83,6 +91,9 @@ export function loadEnv(overrides: Record<string, string | undefined> = {}): Env
     globalDailyWithdrawalCap: BigInt(parsed.GLOBAL_DAILY_WITHDRAWAL_CAP),
     depositAddress: parsed.DEPOSIT_ADDRESS,
     heliusWebhookSecret: parsed.HELIUS_WEBHOOK_SECRET,
+    solanaRpcUrl: parsed.SOLANA_RPC_URL,
+    shinyMint: parsed.SHINY_MINT,
+    multisigAta: parsed.MULTISIG_ATA,
     rateLimitMax: parsed.RATE_LIMIT_MAX,
     logLevel: parsed.LOG_LEVEL,
   };

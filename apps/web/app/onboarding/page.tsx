@@ -10,13 +10,17 @@ import { Button } from "../../components/ui/Button";
 import { useGameClientSafe } from "../../lib/client/provider";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../../lib/uiStore";
+import { useWalletUiStore } from "../../lib/walletStore";
 import { sha256Hex } from "@trash-wars/economy";
+
+const DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "0";
 
 export default function OnboardingPage() {
   const client = useGameClientSafe();
   const qc = useQueryClient();
   const router = useRouter();
   const setGuided = useUiStore((s) => s.setGuided);
+  const openWalletModal = useWalletUiStore((s) => s.openModal);
   const [step, setStep] = useState(0);
   const [handle, setHandle] = useState("");
   const [tos, setTos] = useState(false);
@@ -38,6 +42,15 @@ export default function OnboardingPage() {
       setError(e instanceof Error ? e.message : "Couldn't get you a name.");
       setBusy(false);
     }
+  };
+
+  // SIWS path (real API only): connect modal → sign → session cookie → city.
+  const connectWallet = () => {
+    openWalletModal(() => {
+      void qc.invalidateQueries();
+      setGuided(false);
+      router.push("/");
+    });
   };
 
   return (
@@ -86,8 +99,31 @@ export default function OnboardingPage() {
 
         {step === 1 && (
           <div className="space-y-5 text-left">
-            <h2 className="text-center font-display text-2xl">Pick an alias</h2>
-            <p className="text-center text-sm text-muted">No wallets in the beta. Just a name the city will whisper.</p>
+            <h2 className="text-center font-display text-2xl">{DEMO ? "Pick an alias" : "Make your entrance"}</h2>
+            <p className="text-center text-sm text-muted">
+              {DEMO
+                ? "No wallets in the beta. Just a name the city will whisper."
+                : "Bring a Solana wallet — or just a name the city will whisper."}
+            </p>
+            {!DEMO && (
+              <div className="space-y-2">
+                <Button size="lg" className="w-full" disabled={busy} onClick={connectWallet}>
+                  Connect wallet
+                  <span className="ml-2 rounded-full border border-line px-1.5 py-0.5 text-[9px] uppercase tracking-wide opacity-80">
+                    devnet
+                  </span>
+                </Button>
+                <p className="text-center text-[10px] text-muted/70">
+                  Phantom, Solflare or Backpack. One free signature — your alias is generated from your address.
+                  Connecting accepts the <Link href="/tos" className="underline">beta terms</Link>.
+                </p>
+                <div className="flex items-center gap-3 py-1 text-[10px] uppercase tracking-wide text-muted/60" aria-hidden>
+                  <span className="h-px flex-1 bg-line" />
+                  or play as guest — beta only
+                  <span className="h-px flex-1 bg-line" />
+                </div>
+              </div>
+            )}
             <input
               value={handle}
               onChange={(e) => setHandle(e.target.value)}

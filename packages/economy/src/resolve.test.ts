@@ -62,8 +62,8 @@ describe("table modifiers (property-style)", () => {
 
   it("stealth lowers arrest and moves it into nothing", () => {
     const table = applyStatModifiers(loc("pawn-shop").table, { stealth: 4, muscle: 0, luck: 0, reputation: 0 });
-    expect(table.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(1_200 - 600);
-    expect(table.find((r) => r.outcome === "nothing")?.probabilityBps).toBe(2_800 + 600);
+    expect(table.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(1_100 - 600);
+    expect(table.find((r) => r.outcome === "nothing")?.probabilityBps).toBe(1_800 + 600);
   });
 
   it("muscle raises multipliers, capped at +20%", () => {
@@ -76,7 +76,7 @@ describe("table modifiers (property-style)", () => {
   it("luck moves probability from nothing into the jackpot row when present", () => {
     const mint = applyStatModifiers(loc("the-mint").table, { stealth: 0, muscle: 0, luck: 10, reputation: 0 });
     expect(mint.find((r) => r.outcome === "jackpot")?.probabilityBps).toBe(300 + 300);
-    expect(mint.find((r) => r.outcome === "nothing")?.probabilityBps).toBe(3_000 - 300);
+    expect(mint.find((r) => r.outcome === "nothing")?.probabilityBps).toBe(2_100 - 300);
     // no jackpot row -> no-op
     const corner = applyStatModifiers(loc("corner-store").table, { stealth: 0, muscle: 0, luck: 10, reputation: 0 });
     expect(sum(corner)).toBe(10_000);
@@ -95,21 +95,21 @@ describe("table modifiers (property-style)", () => {
   it("patrol shifts respect the location caps", () => {
     const pawn = loc("pawn-shop");
     const patrolled = applyPatrolModifiers(pawn.table, 100, pawn);
-    expect(patrolled.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(1_200 + pawn.capArrestShiftBps);
-    expect(patrolled.find((r) => r.outcome === "confiscation")?.probabilityBps).toBe(500 + pawn.capConfShiftBps);
+    expect(patrolled.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(1_100 + pawn.capArrestShiftBps);
+    expect(patrolled.find((r) => r.outcome === "confiscation")?.probabilityBps).toBe(600 + pawn.capConfShiftBps);
   });
 
   it("bribe removes half of the patrol-added arrest/confiscation delta", () => {
     const pawn = loc("pawn-shop");
     const patrolled = applyPatrolModifiers(pawn.table, 5, pawn);
     const bribed = applyBribe(patrolled, pawn.table);
-    const addedArrest = (patrolled.find((r) => r.outcome === "arrest")?.probabilityBps ?? 0) - 1_200;
-    const addedConf = (patrolled.find((r) => r.outcome === "confiscation")?.probabilityBps ?? 0) - 500;
+    const addedArrest = (patrolled.find((r) => r.outcome === "arrest")?.probabilityBps ?? 0) - 1_100;
+    const addedConf = (patrolled.find((r) => r.outcome === "confiscation")?.probabilityBps ?? 0) - 600;
     expect(bribed.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(
-      1_200 + addedArrest - Math.floor(addedArrest / 2),
+      1_100 + addedArrest - Math.floor(addedArrest / 2),
     );
     expect(bribed.find((r) => r.outcome === "confiscation")?.probabilityBps).toBe(
-      500 + addedConf - Math.floor(addedConf / 2),
+      600 + addedConf - Math.floor(addedConf / 2),
     );
     expect(sum(bribed)).toBe(10_000);
   });
@@ -162,12 +162,12 @@ describe("money math", () => {
 
   it("computeEvBps matches the hand-computed doc-01 EVs", () => {
     const expected: Record<string, number> = {
-      "corner-store": 9_800, // 0.70 * 1.4
-      "pawn-shop": 9_900, // 0.55 * 1.8
-      "jewelry-district": 10_800, // 0.45 * 2.4
-      "armored-truck": 11_200, // 0.35 * 3.2
-      "first-national": 12_500, // 0.25 * 5.0
-      "the-mint": 9_600, // 0.12 * 5 + 0.03 * 12
+      "corner-store": 9_800, // 0.70 * 1.4 — the free-tier anchor, frozen
+      "pawn-shop": 9_880, // 0.65 * 1.52 (S1 v2)
+      "jewelry-district": 10_088, // 0.52 * 1.94 (S1 v2)
+      "armored-truck": 10_290, // 0.42 * 2.45 (S1 v2)
+      "first-national": 10_500, // 0.25 * 4.2 (S1 v2, was 5.0x)
+      "the-mint": 9_900, // 0.15 * 4.6 + 0.03 * 10 (S1 v2, jackpot was 12x)
     };
     for (const location of SEASON1_LOCATIONS) {
       const ev = computeEvBps(location.table);
@@ -193,14 +193,14 @@ describe("money math", () => {
 
   it("idleRatePerHour adds 10% per level above 1, bigint math", () => {
     const corner = loc("corner-store");
-    expect(idleRatePerHour(corner, 1)).toBe(toBaseUnits(30));
-    expect(idleRatePerHour(corner, 2)).toBe(toBaseUnits(33));
-    expect(idleRatePerHour(corner, 11)).toBe(toBaseUnits(60));
+    expect(idleRatePerHour(corner, 1)).toBe(toBaseUnits(4));
+    expect(idleRatePerHour(corner, 2)).toBe((toBaseUnits(4) * 11n) / 10n);
+    expect(idleRatePerHour(corner, 11)).toBe(toBaseUnits(8));
   });
 
   it("insurance, loss/bail splits conserve every base unit", () => {
     const jewelry = loc("jewelry-district");
-    expect(insurancePrice(toBaseUnits(10_000), jewelry)).toBe(toBaseUnits(800));
+    expect(insurancePrice(toBaseUnits(10_000), jewelry)).toBe(toBaseUnits(1_600));
     const odd = 1_000_001n; // indivisible amount
     const loss = splitLoss(odd);
     expect(loss.burn + loss.pd).toBe(odd);

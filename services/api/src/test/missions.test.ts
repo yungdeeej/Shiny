@@ -41,7 +41,7 @@ async function myRaccoon(session: TestSession): Promise<string> {
 }
 
 const FN = "first-national";
-const STAKE = toBaseUnits(2_500); // first-national min stake
+const STAKE = toBaseUnits(600); // first-national min stake (S1 v2)
 
 describe("mission lifecycle", () => {
   it("win: outcome matches an independent recompute from the revealed seed", async () => {
@@ -83,7 +83,7 @@ describe("mission lifecycle", () => {
     expect(await ledgerTotal(app)).toBe(0n);
   });
 
-  it("arrest: stake returned, character jailed, bail releases (75/25 burn/pd)", async () => {
+  it("arrest: stake returned, character jailed, bail releases (99/1 burn/pd)", async () => {
     const session = await guest(app, "racc_arrest");
     const characterId = await myRaccoon(session);
     const before = await userBalance(app, session.userId);
@@ -109,15 +109,16 @@ describe("mission lifecycle", () => {
     expect(bail.statusCode).toBe(200);
     char = (await app.inject(as(session, { method: "GET", url: "/game/characters" }))).json()[0];
     expect(char.status).toBe("idle");
-    expect((await systemBalance(app, "burn_pool")) - burnBefore).toBe(toBaseUnits(1_125)); // 75%
-    expect((await systemBalance(app, "pd_pool")) - pdBefore).toBe(toBaseUnits(375)); // 25%
+    expect((await systemBalance(app, "burn_pool")) - burnBefore).toBe(toBaseUnits(1_485)); // 99% (S1 v2)
+    expect((await systemBalance(app, "pd_pool")) - pdBefore).toBe(toBaseUnits(15)); // 1% (S1 v2)
     expect(await ledgerTotal(app)).toBe(0n);
   });
 
-  it("confiscation: stake routes to pd_pool (no patrols active)", async () => {
+  it("confiscation: stake splits burn/pd via splitLoss (no patrols active, S1 v2)", async () => {
     const session = await guest(app, "racc_conf");
     const characterId = await myRaccoon(session);
     const pdBefore = await systemBalance(app, "pd_pool");
+    const burnBefore = await systemBalance(app, "burn_pool");
 
     const { missionId } = await startMissionForced(
       app,
@@ -127,7 +128,9 @@ describe("mission lifecycle", () => {
     );
     await settleMission(app.ctx, missionId);
 
-    expect((await systemBalance(app, "pd_pool")) - pdBefore).toBe(STAKE);
+    const { burn, pd } = splitLoss(STAKE);
+    expect((await systemBalance(app, "pd_pool")) - pdBefore).toBe(pd);
+    expect((await systemBalance(app, "burn_pool")) - burnBefore).toBe(burn);
     expect(await ledgerTotal(app)).toBe(0n);
   });
 
@@ -237,21 +240,23 @@ describe("free-tier missions", () => {
   it("runs without a character, enforces stake cap and cooldown", async () => {
     const session = await guest(app, "free_tier_racc");
 
+    // S1 v2: freeTierMaxStake (500) == corner-store maxStake, so the location
+    // range check rejects oversized stakes before the free-tier cap is reached.
     const tooHigh = await app.inject(
       as(session, {
         method: "POST",
         url: "/game/missions",
-        payload: { locationSlug: "corner-store", stake: toBaseUnits(6_000).toString() },
+        payload: { locationSlug: "corner-store", stake: toBaseUnits(600).toString() },
       }),
     );
     expect(tooHigh.statusCode).toBe(400);
-    expect(tooHigh.json().error.code).toBe("STAKE_TOO_HIGH");
+    expect(tooHigh.json().error.code).toBe("STAKE_OUT_OF_RANGE");
 
     const ok = await app.inject(
       as(session, {
         method: "POST",
         url: "/game/missions",
-        payload: { locationSlug: "corner-store", stake: toBaseUnits(1_000).toString() },
+        payload: { locationSlug: "corner-store", stake: toBaseUnits(500).toString() },
       }),
     );
     expect(ok.statusCode).toBe(200);
@@ -262,7 +267,7 @@ describe("free-tier missions", () => {
       as(session, {
         method: "POST",
         url: "/game/missions",
-        payload: { locationSlug: "corner-store", stake: toBaseUnits(1_000).toString() },
+        payload: { locationSlug: "corner-store", stake: toBaseUnits(500).toString() },
       }),
     );
     expect(again.statusCode).toBe(409);
@@ -295,24 +300,37 @@ describe("mission guards", () => {
     );
     expect(below.statusCode).toBe(400);
 
-    // Stake 90k of 100k, then a second mission of 20k must fail on unlocked balance.
+    // Drain the faucet balance to 1k, lock 600 at First National, then a 500
+    // free-tier stake must fail on the remaining unlocked 400.
+    const drain = await app.inject(
+      as(session, {
+        method: "POST",
+        url: "/bank/withdraw",
+        payload: {
+          amount: toBaseUnits(99_000).toString(),
+          destAddress: "BetaDestinationAddress11111111111111111111",
+        },
+      }),
+    );
+    expect(drain.statusCode).toBe(200);
+
     const big = await app.inject(
       as(session, {
         method: "POST",
         url: "/game/missions",
-        payload: { locationSlug: FN, characterId, stake: toBaseUnits(90_000).toString() },
+        payload: { locationSlug: FN, characterId, stake: toBaseUnits(600).toString() },
       }),
     );
     expect(big.statusCode).toBe(200);
     const me = await app.inject(as(session, { method: "GET", url: "/me" }));
-    expect(me.json().lockedBalance).toBe(toBaseUnits(90_000).toString());
+    expect(me.json().lockedBalance).toBe(toBaseUnits(600).toString());
 
     // Same character is busy anyway — use the free tier to hit the balance check.
     const broke = await app.inject(
       as(session, {
         method: "POST",
         url: "/game/missions",
-        payload: { locationSlug: "corner-store", stake: toBaseUnits(5_000).toString() },
+        payload: { locationSlug: "corner-store", stake: toBaseUnits(500).toString() },
       }),
     );
     expect(broke.statusCode).toBe(400);

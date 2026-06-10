@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { applyBps, toBaseUnits, type ProbabilityTable } from "@trash-wars/shared";
+import { applyBps, POLICY, toBaseUnits, type ProbabilityTable } from "@trash-wars/shared";
 import { SEASON1_LOCATIONS } from "@trash-wars/economy";
 import { characters, patrols } from "@trash-wars/db";
 import { eq } from "../core/orm.js";
@@ -49,7 +49,7 @@ async function makeHound(session: TestSession, name: string, reputation: number)
   return rows[0]!.id;
 }
 
-const PAWN = "pawn-shop"; // cap 5, base arrest 1200, conf 500
+const PAWN = "pawn-shop"; // cap 5, base arrest 1100, conf 600 (S1 v2)
 
 describe("patrols", () => {
   it("shifts the persisted mission table (sum stays 10000) and pays bounty on confiscation", async () => {
@@ -69,7 +69,7 @@ describe("patrols", () => {
     const base = SEASON1_LOCATIONS.find((l) => l.slug === PAWN)!.table;
     const racc = await guest(app, "patrolled_racc");
     const chars = await app.inject(as(racc, { method: "GET", url: "/game/characters" }));
-    const stake = toBaseUnits(1_000);
+    const stake = toBaseUnits(750); // pawn-shop max stake (S1 v2)
 
     const start = await app.inject(
       as(racc, {
@@ -85,7 +85,7 @@ describe("patrols", () => {
     expect(bps(table, "arrest")).toBe(bps(base, "arrest") - 150 + 160);
     expect(bps(table, "confiscation")).toBe(bps(base, "confiscation") + 120);
 
-    // Force confiscation: 40% of the stake to the patrolling hound's owner.
+    // Force confiscation: POLICY.patrolBountyBps of the stake to the patrolling hound's owner (S1 v2).
     const { peekServerSeed, findClientSeed, setClientSeed, forceDue } = await import("./helpers.js");
     const seed = await peekServerSeed(app, start.json().id);
     await setClientSeed(
@@ -97,7 +97,9 @@ describe("patrols", () => {
 
     const copBefore = await userBalance(app, cop.userId);
     await settleMission(app.ctx, start.json().id);
-    expect((await userBalance(app, cop.userId)) - copBefore).toBe(applyBps(stake, 4_000));
+    expect((await userBalance(app, cop.userId)) - copBefore).toBe(
+      applyBps(stake, POLICY.patrolBountyBps),
+    );
     expect(await ledgerTotal(app)).toBe(0n);
   });
 
@@ -178,7 +180,7 @@ describe("patrols", () => {
 
     const racc = await guest(app, "briber_racc");
     const chars = await app.inject(as(racc, { method: "GET", url: "/game/characters" }));
-    const stake = toBaseUnits(10_000);
+    const stake = toBaseUnits(900); // jewelry-district max stake (S1 v2)
     const start = await app.inject(
       as(racc, {
         method: "POST",

@@ -34,7 +34,13 @@ export async function buildContext(env: Env, opts: BuildContextOptions = {}): Pr
   await migrateDb(db);
   const ledger = new LedgerService(db);
   const accounts = await ledger.ensureSystemAccounts();
-  const chain = createChainProvider({ BETA_MODE: env.beta ? "1" : "0" });
+  const chain = createChainProvider({
+    BETA_MODE: env.beta ? "1" : "0",
+    SOLANA_RPC_URL: env.solanaRpcUrl,
+    SHINY_MINT: env.shinyMint,
+    DEPOSIT_ADDRESS: env.depositAddress,
+    MULTISIG_ATA: env.multisigAta,
+  });
   const bus = new GameBus();
 
   return {

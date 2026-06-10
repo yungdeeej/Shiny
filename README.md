@@ -24,6 +24,30 @@ pnpm dev:web        # → http://localhost:3000  (NEXT_PUBLIC_DEMO_MODE=1 is the
 
 Deploy `apps/web` to Vercel as-is and you have a public beta link.
 
+## 🔗 Devnet build (wallet login + real chain reads)
+
+Point the stack at Solana devnet — players sign in with Phantom/Solflare/Backpack (SIWS),
+and the API reads real token balances:
+
+```bash
+# API — real chain reads, no hot wallet needed yet
+BETA_MODE=0 \
+SOLANA_RPC_URL=https://api.devnet.solana.com \
+SHINY_MINT=<devnet mint address> \
+DEPOSIT_ADDRESS=<hot-wallet $SHINY ATA>  MULTISIG_ATA=<multisig $SHINY ATA> \
+pnpm dev:api
+
+# Web — http client + wallet adapter (lazy-loaded, demo bundle unaffected)
+NEXT_PUBLIC_DEMO_MODE=0 NEXT_PUBLIC_SOLANA_RPC_URL=https://api.devnet.solana.com pnpm dev:web
+```
+
+**What's real:** wallet connect + SIWS sign-in (sessions, `/auth/nonce` → `/auth/verify`),
+the free-tier holding gate (`getTokenAccountsByOwner` on `SHINY_MINT`, 5-min cache,
+fail-closed), and proof-of-reserves reads (`getTokenAccountBalance` on the two ATAs).
+**Still simulated:** withdrawal payouts, NFT mints/burns and staking flips return
+`DEVNET-SIM-*` signatures until the hot-wallet worker lands — the game stays fully
+playable. Guest login stays available only while `BETA_MODE=1`.
+
 ## 🏗️ Run the full stack (custodial backend)
 
 The backend boots with **no Docker, no Redis, no Solana** in beta mode (PGlite + stubbed chain

@@ -1,4 +1,5 @@
 import type { CharacterStats, Faction } from "@trash-wars/shared";
+import { DevnetChainProvider } from "./devnet.js";
 
 /**
  * Everything the game needs from Solana, behind one interface so the entire
@@ -88,13 +89,28 @@ export class StubChainProvider implements ChainProvider {
 }
 
 /**
- * Devnet/mainnet provider lands in services/worker with @solana/web3.js +
- * @metaplex-foundation/mpl-core once keys/RPC exist (docs 02/05/07 runbooks).
- * Keeping heavy Solana deps out of this package keeps the web bundle clean.
+ * BETA_MODE=1 → stub. Otherwise, with SOLANA_RPC_URL + SHINY_MINT set, the
+ * devnet provider (real reads over plain fetch JSON-RPC, simulated writes
+ * until the worker brings the hot wallet). Mainnet custody (Metaplex Core
+ * mints, real payouts) still lands in services/worker per docs 02/05/07.
  */
-export function createChainProvider(env: { BETA_MODE?: string }): ChainProvider {
+export function createChainProvider(env: {
+  BETA_MODE?: string;
+  SOLANA_RPC_URL?: string;
+  SHINY_MINT?: string;
+  DEPOSIT_ADDRESS?: string;
+  MULTISIG_ATA?: string;
+}): ChainProvider {
   if (env.BETA_MODE === "1" || env.BETA_MODE === "true") return new StubChainProvider();
+  if (env.SOLANA_RPC_URL && env.SHINY_MINT) {
+    return new DevnetChainProvider({
+      rpcUrl: env.SOLANA_RPC_URL,
+      shinyMint: env.SHINY_MINT,
+      depositAta: env.DEPOSIT_ADDRESS,
+      multisigAta: env.MULTISIG_ATA,
+    });
+  }
   throw new Error(
-    "Non-beta ChainProvider not wired yet: set BETA_MODE=1, or implement SolanaChainProvider (see docs/05, docs/07).",
+    "Non-beta ChainProvider needs config: set BETA_MODE=1 for the stub, or set SOLANA_RPC_URL + SHINY_MINT for the devnet provider (see docs/05, docs/07).",
   );
 }

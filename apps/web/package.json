@@ -12,7 +12,13 @@
   },
   "dependencies": {
     "@noble/hashes": "^1.5.0",
+    "@solana/wallet-adapter-base": "^0.9.27",
+    "@solana/wallet-adapter-phantom": "^0.9.29",
+    "@solana/wallet-adapter-react": "^0.15.39",
+    "@solana/wallet-adapter-solflare": "^0.6.33",
+    "@solana/web3.js": "^1.98.4",
     "@tanstack/react-query": "^5.62.8",
+    "bs58": "^6.0.0",
     "@trash-wars/economy": "workspace:*",
     "@trash-wars/shared": "workspace:*",
     "clsx": "^2.1.1",
