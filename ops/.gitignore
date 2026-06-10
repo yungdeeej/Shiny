@@ -1,0 +1,6 @@
+# Launch / buyback manifests, checkpoints, snapshots (contain addresses + tx sigs;
+# published manually post-TGE, never auto-committed).
+launch/out/
+
+# Sentinel drafted posts + state
+sentinel-out/

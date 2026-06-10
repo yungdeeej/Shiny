@@ -1,0 +1,2 @@
+# keep the small committed markdown scenario reports; CSVs are regenerable via `pnpm sim`
+reports/*.csv

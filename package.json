@@ -1,0 +1,37 @@
+{
+  "name": "trash-wars",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Trash Wars — a risk-based idle game on Solana. Token: $SHINY. City: Shorefront City.",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/**' build && pnpm -r --filter './services/**' build && pnpm -r --filter './apps/**' build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "dev": "pnpm -r --parallel dev",
+    "dev:web": "pnpm --filter @trash-wars/web dev",
+    "dev:api": "pnpm --filter @trash-wars/api dev",
+    "dev:worker": "pnpm --filter @trash-wars/worker dev",
+    "db:generate": "pnpm --filter @trash-wars/db db:generate",
+    "db:migrate": "pnpm --filter @trash-wars/db db:migrate",
+    "db:seed": "pnpm --filter @trash-wars/db db:seed",
+    "sim": "pnpm --filter @trash-wars/economy sim"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "bufferutil",
+      "utf-8-validate",
+      "bigint-buffer",
+      "@swc/core"
+    ]
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

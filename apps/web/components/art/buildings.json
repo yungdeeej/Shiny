@@ -1,0 +1,12 @@
+{
+  "viewBox": { "width": 1200, "height": 800 },
+  "streetY": 690,
+  "buildings": [
+    { "slug": "corner-store", "x": 60, "y": 560, "width": 170, "height": 130, "labelX": 145, "labelY": 720 },
+    { "slug": "pawn-shop", "x": 270, "y": 520, "width": 160, "height": 170, "labelX": 350, "labelY": 720 },
+    { "slug": "jewelry-district", "x": 470, "y": 480, "width": 180, "height": 210, "labelX": 560, "labelY": 720 },
+    { "slug": "armored-truck", "x": 690, "y": 545, "width": 200, "height": 145, "labelX": 790, "labelY": 720 },
+    { "slug": "first-national", "x": 925, "y": 440, "width": 215, "height": 250, "labelX": 1032, "labelY": 720 },
+    { "slug": "the-mint", "x": 720, "y": 150, "width": 150, "height": 330, "labelX": 795, "labelY": 130 }
+  ]
+}

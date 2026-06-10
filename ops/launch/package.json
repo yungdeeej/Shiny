@@ -1,0 +1,31 @@
+{
+  "name": "@trash-wars/launch-ops",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "$SHINY TGE launch tooling: mint, distribute, verify, airdrop, holder snapshots, buyback. Run scripts with tsx.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "echo 'launch-ops: no tests configured'",
+    "lint": "echo 'launch-ops: no lint configured'",
+    "mint": "tsx src/01-mint-token.ts",
+    "distribute": "tsx src/02-distribute.ts",
+    "verify": "tsx src/03-verify-distribution.ts",
+    "airdrop": "tsx src/04-airdrop.ts",
+    "snapshot": "tsx src/05-snapshot-holders.ts",
+    "buyback": "tsx src/buyback.ts"
+  },
+  "dependencies": {
+    "@metaplex-foundation/mpl-token-metadata": "^3.3.0",
+    "@metaplex-foundation/umi": "^0.9.2",
+    "@metaplex-foundation/umi-bundle-defaults": "^0.9.2",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.4",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

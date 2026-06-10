@@ -1,0 +1,31 @@
+{
+  "name": "@trash-wars/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "echo 'worker: no lint configured'"
+  },
+  "dependencies": {
+    "@trash-wars/api": "workspace:*",
+    "@trash-wars/chain": "workspace:*",
+    "@trash-wars/db": "workspace:*",
+    "@trash-wars/economy": "workspace:*",
+    "@trash-wars/shared": "workspace:*",
+    "bullmq": "^5.34.3",
+    "ioredis": "^5.4.1",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "pino-pretty": "^13.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

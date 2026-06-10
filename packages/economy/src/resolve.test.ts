@@ -1,0 +1,218 @@
+import { describe, expect, it } from "vitest";
+import { toBaseUnits, type CharacterStats, type ProbabilityTable } from "@trash-wars/shared";
+import { SEASON1_LOCATIONS } from "./config/season1.js";
+import { makeRng } from "./rng.js";
+import {
+  applyBribe,
+  applyPatrolModifiers,
+  applyStatModifiers,
+  computeEvBps,
+  computePayout,
+  computePayoutEvBps,
+  heatBandForWeight,
+  idleRatePerHour,
+  insurancePrice,
+  resolveMission,
+  splitBail,
+  splitLoss,
+  upgradeCost,
+} from "./resolve.js";
+
+const sum = (t: ProbabilityTable): number => t.reduce((s, r) => s + r.probabilityBps, 0);
+const loc = (slug: string) => {
+  const found = SEASON1_LOCATIONS.find((l) => l.slug === slug);
+  if (!found) throw new Error(`missing location ${slug}`);
+  return found;
+};
+
+describe("table modifiers (property-style)", () => {
+  it("keeps every table at exactly 10000 bps across 1000 randomized stat/patrol/bribe cases", () => {
+    const rng = makeRng("property-tables");
+    for (let i = 0; i < 1_000; i++) {
+      const location = SEASON1_LOCATIONS[Math.floor(rng() * SEASON1_LOCATIONS.length)];
+      if (!location) throw new Error("bad index");
+      const stats: CharacterStats = {
+        stealth: Math.floor(rng() * 13),
+        muscle: Math.floor(rng() * 13),
+        luck: Math.floor(rng() * 13),
+        reputation: Math.floor(rng() * 13),
+      };
+      const weight = rng() * 15;
+
+      const patrolled = applyPatrolModifiers(location.table, weight, location);
+      const statted = applyStatModifiers(patrolled, stats);
+      const base = applyStatModifiers(location.table, stats);
+      const bribed = applyBribe(statted, base);
+
+      for (const table of [patrolled, statted, bribed]) {
+        expect(sum(table)).toBe(10_000);
+        for (const row of table) {
+          expect(row.probabilityBps).toBeGreaterThanOrEqual(0);
+          expect(Number.isInteger(row.probabilityBps)).toBe(true);
+        }
+      }
+      // paying rows never squeezed below 100 bps by patrol pressure
+      for (const row of patrolled) {
+        if (row.outcome === "win" || row.outcome === "jackpot") {
+          expect(row.probabilityBps).toBeGreaterThanOrEqual(100);
+        }
+      }
+    }
+  });
+
+  it("stealth lowers arrest and moves it into nothing", () => {
+    const table = applyStatModifiers(loc("pawn-shop").table, { stealth: 4, muscle: 0, luck: 0, reputation: 0 });
+    expect(table.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(1_200 - 600);
+    expect(table.find((r) => r.outcome === "nothing")?.probabilityBps).toBe(2_800 + 600);
+  });
+
+  it("muscle raises multipliers, capped at +20%", () => {
+    const t5 = applyStatModifiers(loc("corner-store").table, { stealth: 0, muscle: 5, luck: 0, reputation: 0 });
+    expect(t5.find((r) => r.outcome === "win")?.multiplierBps).toBe(14_000 + 1_400);
+    const t20 = applyStatModifiers(loc("corner-store").table, { stealth: 0, muscle: 50, luck: 0, reputation: 0 });
+    expect(t20.find((r) => r.outcome === "win")?.multiplierBps).toBe(14_000 + 2_800); // capped at 20%
+  });
+
+  it("luck moves probability from nothing into the jackpot row when present", () => {
+    const mint = applyStatModifiers(loc("the-mint").table, { stealth: 0, muscle: 0, luck: 10, reputation: 0 });
+    expect(mint.find((r) => r.outcome === "jackpot")?.probabilityBps).toBe(300 + 300);
+    expect(mint.find((r) => r.outcome === "nothing")?.probabilityBps).toBe(3_000 - 300);
+    // no jackpot row -> no-op
+    const corner = applyStatModifiers(loc("corner-store").table, { stealth: 0, muscle: 0, luck: 10, reputation: 0 });
+    expect(sum(corner)).toBe(10_000);
+    expect(corner.find((r) => r.outcome === "nothing")?.probabilityBps).toBe(2_500);
+  });
+
+  it("patrol adds a confiscation row to tables that lack one", () => {
+    const corner = loc("corner-store");
+    expect(corner.table.some((r) => r.outcome === "confiscation")).toBe(false);
+    const patrolled = applyPatrolModifiers(corner.table, 4, corner);
+    const conf = patrolled.find((r) => r.outcome === "confiscation");
+    expect(conf?.probabilityBps).toBe(Math.min(Math.floor(4 * 60), corner.capConfShiftBps));
+    expect(sum(patrolled)).toBe(10_000);
+  });
+
+  it("patrol shifts respect the location caps", () => {
+    const pawn = loc("pawn-shop");
+    const patrolled = applyPatrolModifiers(pawn.table, 100, pawn);
+    expect(patrolled.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(1_200 + pawn.capArrestShiftBps);
+    expect(patrolled.find((r) => r.outcome === "confiscation")?.probabilityBps).toBe(500 + pawn.capConfShiftBps);
+  });
+
+  it("bribe removes half of the patrol-added arrest/confiscation delta", () => {
+    const pawn = loc("pawn-shop");
+    const patrolled = applyPatrolModifiers(pawn.table, 5, pawn);
+    const bribed = applyBribe(patrolled, pawn.table);
+    const addedArrest = (patrolled.find((r) => r.outcome === "arrest")?.probabilityBps ?? 0) - 1_200;
+    const addedConf = (patrolled.find((r) => r.outcome === "confiscation")?.probabilityBps ?? 0) - 500;
+    expect(bribed.find((r) => r.outcome === "arrest")?.probabilityBps).toBe(
+      1_200 + addedArrest - Math.floor(addedArrest / 2),
+    );
+    expect(bribed.find((r) => r.outcome === "confiscation")?.probabilityBps).toBe(
+      500 + addedConf - Math.floor(addedConf / 2),
+    );
+    expect(sum(bribed)).toBe(10_000);
+  });
+});
+
+describe("resolveMission", () => {
+  it("matches the configured corner-store distribution within 1.5% over 200k rolls", () => {
+    const table = loc("corner-store").table;
+    const rng = makeRng(20_260_610);
+    const counts = new Map<string, number>();
+    const total = 200_000;
+    for (let i = 0; i < total; i++) {
+      const row = resolveMission(table, rng());
+      counts.set(row.outcome, (counts.get(row.outcome) ?? 0) + 1);
+    }
+    for (const row of table) {
+      const observedBps = ((counts.get(row.outcome) ?? 0) / total) * 10_000;
+      expect(Math.abs(observedBps - row.probabilityBps)).toBeLessThanOrEqual(150);
+    }
+  });
+
+  it("maps roll edges to the right rows", () => {
+    const table = loc("corner-store").table;
+    expect(resolveMission(table, 0).outcome).toBe("win");
+    expect(resolveMission(table, 0.6999).outcome).toBe("win");
+    expect(resolveMission(table, 0.7).outcome).toBe("nothing");
+    expect(resolveMission(table, 0.9499).outcome).toBe("nothing");
+    expect(resolveMission(table, 0.95).outcome).toBe("arrest");
+    expect(resolveMission(table, 0.999999).outcome).toBe("arrest");
+    expect(() => resolveMission(table, 1)).toThrow();
+    expect(() => resolveMission(table, -0.1)).toThrow();
+  });
+});
+
+describe("money math", () => {
+  it("computePayout follows the outcome contract", () => {
+    const stake = toBaseUnits(1_000);
+    expect(computePayout(stake, { outcome: "win", probabilityBps: 1, multiplierBps: 14_000 })).toBe(
+      toBaseUnits(1_400),
+    );
+    expect(computePayout(stake, { outcome: "jackpot", probabilityBps: 1, multiplierBps: 120_000 })).toBe(
+      toBaseUnits(12_000),
+    );
+    expect(computePayout(stake, { outcome: "nothing", probabilityBps: 1 })).toBe(stake);
+    expect(computePayout(stake, { outcome: "arrest", probabilityBps: 1 })).toBe(stake);
+    expect(computePayout(stake, { outcome: "confiscation", probabilityBps: 1 })).toBe(0n);
+    expect(computePayout(stake, { outcome: "rekt_items", probabilityBps: 1 })).toBe(0n);
+    expect(computePayout(stake, { outcome: "rekt_character", probabilityBps: 1 })).toBe(0n);
+  });
+
+  it("computeEvBps matches the hand-computed doc-01 EVs", () => {
+    const expected: Record<string, number> = {
+      "corner-store": 9_800, // 0.70 * 1.4
+      "pawn-shop": 9_900, // 0.55 * 1.8
+      "jewelry-district": 10_800, // 0.45 * 2.4
+      "armored-truck": 11_200, // 0.35 * 3.2
+      "first-national": 12_500, // 0.25 * 5.0
+      "the-mint": 9_600, // 0.12 * 5 + 0.03 * 12
+    };
+    for (const location of SEASON1_LOCATIONS) {
+      const ev = computeEvBps(location.table);
+      const want = expected[location.slug];
+      expect(want).toBeDefined();
+      expect(Math.abs(ev - (want ?? 0))).toBeLessThanOrEqual(1);
+    }
+    // full payout EV (incl. stake returned on nothing/arrest) for the budget model
+    expect(computePayoutEvBps(loc("corner-store").table)).toBe(9_800 + 3_000);
+  });
+
+  it("upgradeCost starts at 500 SHINY and grows monotonically at ×1.35", () => {
+    expect(upgradeCost(0)).toBe(toBaseUnits(500));
+    expect(upgradeCost(1)).toBe(toBaseUnits(675));
+    expect(upgradeCost(2)).toBe(toBaseUnits(911)); // round(500 * 1.35^2 = 911.25)
+    let prev = upgradeCost(0);
+    for (let level = 1; level <= 30; level++) {
+      const next = upgradeCost(level);
+      expect(next).toBeGreaterThan(prev);
+      prev = next;
+    }
+  });
+
+  it("idleRatePerHour adds 10% per level above 1, bigint math", () => {
+    const corner = loc("corner-store");
+    expect(idleRatePerHour(corner, 1)).toBe(toBaseUnits(30));
+    expect(idleRatePerHour(corner, 2)).toBe(toBaseUnits(33));
+    expect(idleRatePerHour(corner, 11)).toBe(toBaseUnits(60));
+  });
+
+  it("insurance, loss/bail splits conserve every base unit", () => {
+    const jewelry = loc("jewelry-district");
+    expect(insurancePrice(toBaseUnits(10_000), jewelry)).toBe(toBaseUnits(800));
+    const odd = 1_000_001n; // indivisible amount
+    const loss = splitLoss(odd);
+    expect(loss.burn + loss.pd).toBe(odd);
+    const bail = splitBail(odd);
+    expect(bail.burn + bail.pd).toBe(odd);
+  });
+
+  it("heatBandForWeight follows HEAT_THRESHOLDS", () => {
+    expect(heatBandForWeight(0)).toBe("none");
+    expect(heatBandForWeight(1)).toBe("low");
+    expect(heatBandForWeight(2)).toBe("med");
+    expect(heatBandForWeight(5)).toBe("high");
+    expect(heatBandForWeight(100)).toBe("blazing");
+  });
+});

@@ -1,0 +1,27 @@
+[
+  {
+    "label": "emissions_multisig",
+    "address": "REPLACE_WITH_SQUADS_MULTISIG_VAULT_ADDRESS",
+    "amount": 700000000
+  },
+  {
+    "label": "vault_source",
+    "address": "REPLACE_WITH_ALPHA_VAULT_SOURCE_WALLET",
+    "amount": 120000000
+  },
+  {
+    "label": "liquidity",
+    "address": "REPLACE_WITH_LIQUIDITY_OPS_WALLET",
+    "amount": 100000000
+  },
+  {
+    "label": "marketing",
+    "address": "REPLACE_WITH_MARKETING_WALLET",
+    "amount": 50000000
+  },
+  {
+    "label": "airdrop",
+    "address": "REPLACE_WITH_AIRDROP_HOT_WALLET",
+    "amount": 30000000
+  }
+]

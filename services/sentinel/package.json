@@ -1,0 +1,22 @@
+{
+  "name": "@trash-wars/sentinel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Shorefront Sentinel — in-world newspaper content automation (beta-scoped: drafts only, dry-run by default).",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "echo 'sentinel: no tests configured'",
+    "lint": "echo 'sentinel: no lint configured'"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
