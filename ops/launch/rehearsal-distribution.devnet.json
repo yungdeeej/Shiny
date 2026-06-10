@@ -1,0 +1,27 @@
+[
+  {
+    "label": "emissions_multisig",
+    "address": "Fphnwsys3SW8ZFaySdtKhBHDoNQibeDrC1fJjQJNah2q",
+    "amount": 700000000
+  },
+  {
+    "label": "vault_source",
+    "address": "F3WuTPmTEYUJMoiYRzG9fpEtZVobNi9pRZuwHgct4eEZ",
+    "amount": 120000000
+  },
+  {
+    "label": "liquidity",
+    "address": "6Ut9zPnwXp7ksALFwJHmfj8aPvm1xyK8jHLLDTHMt6bZ",
+    "amount": 100000000
+  },
+  {
+    "label": "marketing",
+    "address": "J4gy4RGwLHqPC7EQ5a1BEwD2kMLNJSYXkH9zSmT2RUww",
+    "amount": 50000000
+  },
+  {
+    "label": "airdrop",
+    "address": "GHc376FJmKyRy68w5X4TR2fUSK2DGmv7N3VUBACbKG7k",
+    "amount": 30000000
+  }
+]
