@@ -44,6 +44,7 @@ export const ACCOUNT_KINDS = [
   "withdrawals_payable",
   "onchain_reserve_mirror",
   "burned",
+  "jackpot_pool", // v1.1: progressive jackpot pool (specs/03)
 ] as const;
 export type AccountKind = (typeof ACCOUNT_KINDS)[number];
 export const accountKindEnum = pgEnum("account_kind", ACCOUNT_KINDS);
@@ -96,6 +97,15 @@ export const raffleTypeEnum = pgEnum("raffle_type", ["recruitment", "cosmetic"])
 export const raffleStateEnum = pgEnum("raffle_state", ["upcoming", "open", "drawing", "drawn"]);
 export const listingKindEnum = pgEnum("listing_kind", ["character", "cosmetic"]);
 export const listingStateEnum = pgEnum("listing_state", ["active", "sold", "delisted"]);
+/* v1.1 launch-scope enums (specs/02, specs/03). */
+export const jackpotEventKindEnum = pgEnum("jackpot_event_kind", ["seed", "win"]);
+export const passTrackEnum = pgEnum("pass_track", ["free", "premium"]);
+export const passRewardKindEnum = pgEnum("pass_reward_kind", [
+  "cosmetic",
+  "insurance_voucher",
+  "raffle_fragments",
+  "nameplate",
+]);
 
 /* ── Identity ─────────────────────────────────────────────────────── */
 
@@ -107,6 +117,12 @@ export const users = pgTable("users", {
   tosVersion: text("tos_version"),
   feedAnonymous: boolean("feed_anonymous").notNull().default(false),
   frozen: boolean("frozen").notNull().default(false),
+  /* v1.1 Street Cred (specs/01): denormalized tier + downgrade-grace tracking. */
+  currentTier: text("current_tier").notNull().default("none"),
+  tierGraceStartedAt: timestamp("tier_grace_started_at", { withTimezone: true }),
+  tierGraceTarget: text("tier_grace_target"),
+  /* v1.1 Season Pass (specs/02): free single-mission insurance vouchers held. */
+  insuranceVouchers: integer("insurance_vouchers").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -460,6 +476,164 @@ export const auditLog = pgTable("audit_log", {
   detail: jsonb("detail").$type<Record<string, unknown>>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/* ── v1.1 launch scope: jackpot / street cred / season pass ───────── */
+
+/** Progressive jackpot history: the 2M seed + every pool win (specs/03). */
+export const jackpotEvents = pgTable("jackpot_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: jackpotEventKindEnum("kind").notNull(),
+  missionId: uuid("mission_id"),
+  userId: uuid("user_id"),
+  amount: bigint("amount", { mode: "bigint" }).notNull(),
+  poolAfter: bigint("pool_after", { mode: "bigint" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Street Cred snapshots: daily job + on-demand resolution (specs/01). */
+export const tierSnapshots = pgTable("tier_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  wallet: text("wallet"),
+  balance: bigint("balance", { mode: "bigint" }).notNull(),
+  tier: text("tier").notNull(),
+  snapshottedAt: timestamp("snapshotted_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Tier thresholds + perks, seeded from shared TIER_DEFINITIONS; thresholds move
+ *  only through the 7-day-notice timelock (pending_changes). */
+export const tierDefinitions = pgTable("tier_definitions", {
+  tier: text("tier").primaryKey(),
+  minBalance: bigint("min_balance", { mode: "bigint" }).notNull(),
+  perks: jsonb("perks").$type<Record<string, unknown>>().notNull(),
+});
+
+/** Season Pass purchases — one per user per season (specs/02). */
+export const seasonPasses = pgTable(
+  "season_passes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    season: integer("season").notNull(),
+    premium: boolean("premium").notNull().default(false),
+    purchasedAt: timestamp("purchased_at", { withTimezone: true }).notNull().defaultNow(),
+    txSig: text("tx_sig"),
+  },
+  (t) => ({
+    userSeasonUq: uniqueIndex("season_passes_user_season_uq").on(t.userId, t.season),
+  }),
+);
+
+export const passProgress = pgTable(
+  "pass_progress",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    season: integer("season").notNull(),
+    xp: integer("xp").notNull().default(0),
+    level: integer("level").notNull().default(0),
+  },
+  (t) => ({
+    userSeasonUq: uniqueIndex("pass_progress_user_season_uq").on(t.userId, t.season),
+  }),
+);
+
+export const passChallenges = pgTable("pass_challenges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  season: integer("season").notNull(),
+  week: integer("week").notNull(),
+  slug: text("slug").notNull().unique(),
+  description: text("description").notNull(),
+  /** missions_at_location | wins_anywhere | survive_location | bail_outs | raffle_tickets */
+  kind: text("kind").notNull(),
+  refSlug: text("ref_slug"),
+  target: integer("target").notNull(),
+  xp: integer("xp").notNull(),
+});
+
+export const passChallengeProgress = pgTable(
+  "pass_challenge_progress",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    challengeId: uuid("challenge_id")
+      .notNull()
+      .references(() => passChallenges.id),
+    progress: integer("progress").notNull().default(0),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    userChallengeUq: uniqueIndex("pass_challenge_progress_user_challenge_uq").on(
+      t.userId,
+      t.challengeId,
+    ),
+  }),
+);
+
+/** Iron rule (doc 13 §4): rewards are flex only — never $SHINY, never stats. */
+export const passRewards = pgTable(
+  "pass_rewards",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    season: integer("season").notNull(),
+    level: integer("level").notNull(),
+    track: passTrackEnum("track").notNull(),
+    kind: passRewardKindEnum("kind").notNull(),
+    refSlug: text("ref_slug"),
+    amount: integer("amount"),
+  },
+  (t) => ({
+    seasonLevelTrackUq: uniqueIndex("pass_rewards_season_level_track_uq").on(
+      t.season,
+      t.level,
+      t.track,
+    ),
+  }),
+);
+
+export const passClaims = pgTable(
+  "pass_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    rewardId: uuid("reward_id")
+      .notNull()
+      .references(() => passRewards.id),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userRewardUq: uniqueIndex("pass_claims_user_reward_uq").on(t.userId, t.rewardId),
+  }),
+);
+
+/** Borough+ weekly raffle-ticket grants — idempotent per (user, ISO week). */
+export const raffleWeeklyGrants = pgTable(
+  "raffle_weekly_grants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    week: text("week").notNull(),
+    raffleId: uuid("raffle_id")
+      .notNull()
+      .references(() => raffles.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userWeekUq: uniqueIndex("raffle_weekly_grants_user_week_uq").on(t.userId, t.week),
+  }),
+);
 
 /** Persisted city feed backing the ticker. */
 export const feedEvents = pgTable("feed_events", {

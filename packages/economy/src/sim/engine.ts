@@ -4,12 +4,14 @@
  * rollFromSeeds primitives the live game uses.
  *
  * Conservation invariant, asserted at the end of every simulated day:
- *   deposited + emissionsSpent === Σ playerBalances + burned + pdPool + treasury + withdrawn
+ *   deposited + emissionsSpent === Σ playerBalances + burned + pdPool + jackpotPool + treasury + withdrawn
  */
 import {
+  JACKPOT,
   POLICY,
   SINKS,
   applyBps,
+  tierForHolding,
   toBaseUnits,
   type CharacterStats,
   type ProbabilityTable,
@@ -48,6 +50,11 @@ interface ArchetypeProfile {
   /** stake = balance / stakeDivisor, clamped to the location's min/max. */
   stakeDivisor: bigint;
   upgrades: keyof CharacterStats | null;
+  /**
+   * Assumed wallet-held $SHINY (on-chain, off the game's books) for the static
+   * Street Cred tier distribution report (specs/01). Reporting only.
+   */
+  walletHeld: bigint;
 }
 
 const PROFILES: Record<Archetype, ArchetypeProfile> = {
@@ -58,6 +65,7 @@ const PROFILES: Record<Archetype, ArchetypeProfile> = {
     charactersAtStart: 1,
     stakeDivisor: 5n,
     upgrades: "stealth",
+    walletHeld: toBaseUnits(10_000), // alley — holds exactly the free-tier floor
   },
   extractor: {
     bankroll: toBaseUnits(10_000),
@@ -66,6 +74,7 @@ const PROFILES: Record<Archetype, ArchetypeProfile> = {
     charactersAtStart: 1,
     stakeDivisor: 4n,
     upgrades: null,
+    walletHeld: toBaseUnits(60_000), // block
   },
   whale: {
     bankroll: toBaseUnits(200_000),
@@ -74,6 +83,7 @@ const PROFILES: Record<Archetype, ArchetypeProfile> = {
     charactersAtStart: 10,
     stakeDivisor: 20n,
     upgrades: "muscle",
+    walletHeld: toBaseUnits(5_000_000), // kingpin
   },
   tourist: {
     bankroll: toBaseUnits(12_000),
@@ -82,6 +92,7 @@ const PROFILES: Record<Archetype, ArchetypeProfile> = {
     charactersAtStart: 0,
     stakeDivisor: 10n, // free tier stake = min(holding * 0.1, 5k)
     upgrades: null,
+    walletHeld: toBaseUnits(12_000), // alley
   },
   pd_farmer: {
     bankroll: toBaseUnits(10_000),
@@ -90,6 +101,7 @@ const PROFILES: Record<Archetype, ArchetypeProfile> = {
     charactersAtStart: 1,
     stakeDivisor: 1n,
     upgrades: null,
+    walletHeld: toBaseUnits(250_000), // district — committed capital players
   },
 };
 
@@ -162,10 +174,16 @@ export function runSim(options: SimOptions): SimResult {
     emissionsSpent: 0n,
     burned: 0n,
     pdPool: 0n,
+    jackpotPool: 0n,
     treasury: 0n,
     withdrawn: 0n,
   };
   let emissionsRemaining = SEASON1.emissions;
+
+  // Day-0 jackpot seed (specs/03): 2M from the marketing tranche enters the game
+  // via an in-game ledger event — external tokens, so it counts as deposited.
+  ledger.deposited += JACKPOT.seedAmount;
+  ledger.jackpotPool += JACKPOT.seedAmount;
 
   const deposit = (p: SimPlayer, amount: bigint): void => {
     p.balance += amount;
@@ -206,6 +224,9 @@ export function runSim(options: SimOptions): SimResult {
     let bountyPaid = 0n;
     let lossVolume = 0n;
     let stakeVolume = 0n;
+    let jackpotIn = 0n;
+    let jackpotPaid = 0n;
+    let jackpotHits = 0;
     let missions = 0;
     let arrests = 0;
     let confiscations = 0;
@@ -319,6 +340,24 @@ export function runSim(options: SimOptions): SimResult {
             const paid = payFromBudget(payout - stake); // winnings above stake come from emissions
             p.balance += stake + paid;
             winExcess += paid;
+            // v1.1 (specs/03): from game-day 56, the jackpot outcome at a
+            // jackpotEligible location ALSO wins the pool minus the 10% floor.
+            // The pool payout moves pool → player; it never touches emissions.
+            if (
+              row.outcome === "jackpot" &&
+              loc.jackpotEligible === true &&
+              day >= JACKPOT.winnableGameDay &&
+              ledger.jackpotPool > 0n
+            ) {
+              const floorHold = applyBps(ledger.jackpotPool, JACKPOT.resetFloorBps);
+              const poolPay = ledger.jackpotPool - floorHold;
+              if (poolPay > 0n) {
+                ledger.jackpotPool -= poolPay;
+                p.balance += poolPay;
+                jackpotPaid += poolPay;
+                jackpotHits += 1;
+              }
+            }
             break;
           }
           case "nothing":
@@ -355,9 +394,11 @@ export function runSim(options: SimOptions): SimResult {
                 toSplit -= paid;
               }
             }
-            const { burn: b, pd } = splitLoss(toSplit);
+            const { burn: b, pd, jackpot } = splitLoss(toSplit);
             ledger.burned += b;
             ledger.pdPool += pd;
+            ledger.jackpotPool += jackpot;
+            jackpotIn += jackpot;
             if (row.outcome === "confiscation") confiscations += 1;
             else rekts += 1;
             if (row.outcome === "rekt_character" && !insured && p.characters > 0) {
@@ -444,7 +485,13 @@ export function runSim(options: SimOptions): SimResult {
     let playerBalances = 0n;
     for (const p of players) playerBalances += p.balance;
     const lhs = ledger.deposited + ledger.emissionsSpent;
-    const rhs = playerBalances + ledger.burned + ledger.pdPool + ledger.treasury + ledger.withdrawn;
+    const rhs =
+      playerBalances +
+      ledger.burned +
+      ledger.pdPool +
+      ledger.jackpotPool +
+      ledger.treasury +
+      ledger.withdrawn;
     if (lhs !== rhs) {
       throw new Error(`conservation violated on day ${day}: in=${lhs} accounted=${rhs} diff=${lhs - rhs}`);
     }
@@ -480,6 +527,9 @@ export function runSim(options: SimOptions): SimResult {
       dailyEmissionDemand: demanded,
       dailyLossVolume: lossVolume,
       dailyStakeVolume: stakeVolume,
+      dailyJackpotIn: jackpotIn,
+      dailyJackpotPaid: jackpotPaid,
+      jackpotHits,
       missions,
       arrests,
       confiscations,
@@ -513,10 +563,23 @@ export function runSim(options: SimOptions): SimResult {
   if (last) {
     notes.push(
       `Final ledger: circulating=${last.circulating} burned=${last.burned} pdPool=${last.pdPool} ` +
-        `treasury=${last.treasury} withdrawn=${last.withdrawn} emissionsSpent=${last.emissionsSpent} ` +
-        `of ${SEASON1.emissions} (remaining ${last.emissionsRemaining}).`,
+        `jackpotPool=${last.jackpotPool} treasury=${last.treasury} withdrawn=${last.withdrawn} ` +
+        `emissionsSpent=${last.emissionsSpent} of ${SEASON1.emissions} (remaining ${last.emissionsRemaining}).`,
+    );
+    const totalHits = rows.reduce((s, r) => s + r.jackpotHits, 0);
+    const totalPaid = rows.reduce((s, r) => s + r.dailyJackpotPaid, 0n);
+    notes.push(
+      `Jackpot (specs/03): seeded ${JACKPOT.seedAmount}, winnable from day ${JACKPOT.winnableGameDay}; ` +
+        `${totalHits} pool hit(s) paying ${totalPaid} total; pool ends at ${last.jackpotPool}.`,
     );
   }
 
-  return { options: { ...options, mix }, rows, notes };
+  // Static Street Cred tier distribution from the archetype mix (specs/01).
+  const tierDistribution: Record<string, number> = {};
+  for (const p of players) {
+    const tier = tierForHolding(PROFILES[p.archetype].walletHeld);
+    tierDistribution[tier] = (tierDistribution[tier] ?? 0) + 1;
+  }
+
+  return { options: { ...options, mix }, rows, notes, tierDistribution };
 }

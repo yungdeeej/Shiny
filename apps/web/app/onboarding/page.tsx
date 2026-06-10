@@ -6,9 +6,11 @@ import { useRouter } from "next/navigation";
 import React, { useState } from "react";
 import { CharacterAvatar } from "../../components/art/CharacterAvatar";
 import { Logo } from "../../components/art/Logo";
+import { VaultWidget } from "../../components/game/VaultWidget";
 import { Button } from "../../components/ui/Button";
 import { useGameClientSafe } from "../../lib/client/provider";
 import { useQueryClient } from "@tanstack/react-query";
+import { useJackpot, useNow } from "../../lib/hooks";
 import { useUiStore } from "../../lib/uiStore";
 import { useWalletUiStore } from "../../lib/walletStore";
 import { sha256Hex } from "@trash-wars/economy";
@@ -26,6 +28,8 @@ export default function OnboardingPage() {
   const [tos, setTos] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { data: jackpot } = useJackpot();
+  const now = useNow(1_000);
 
   const handleValid = /^[a-zA-Z0-9_]{3,20}$/.test(handle);
 
@@ -78,6 +82,16 @@ export default function OnboardingPage() {
         {step === 0 && (
           <div className="space-y-6">
             <Logo className="justify-center text-5xl" />
+            {/* the acquisition moment: the climbing vault number, first thing */}
+            {jackpot && (
+              <VaultWidget
+                slim
+                pool={jackpot.pool}
+                winnable={jackpot.winnable}
+                winnableAt={jackpot.winnableAt}
+                now={now}
+              />
+            )}
             <p className="font-display text-lg text-muted">
               Shorefront City. The shiniest token on Solana.<br />
               <span className="text-accent">Steal it.</span>

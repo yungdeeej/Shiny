@@ -2,19 +2,23 @@
 import type { FastifyInstance } from "fastify";
 import { SEASON1, mintPrice } from "@trash-wars/economy";
 import {
+  JACKPOT,
   SUPPLY,
   leaderboardQuery,
+  type JackpotState,
   type LeaderboardEntry,
   type PublicStats,
 } from "@trash-wars/shared";
 import {
   accounts,
   characters,
+  jackpotEvents,
   ledgerEntries,
   ledgerTxns,
   missionOutcomes,
   missions,
   pdDistributions,
+  seasonPasses,
   users,
 } from "@trash-wars/db";
 import { and, desc, eq, gt, gte, inArray, lt, sql } from "../core/orm.js";
@@ -27,6 +31,53 @@ export default async function publicModule(app: FastifyInstance): Promise<void> 
   const ctx = app.ctx;
 
   app.get("/public/feed", async () => recentFeed(ctx, 30));
+
+  // v1.1 (specs/03): the public vault counter — unauthenticated, cached 10s.
+  let jackpotCache: { state: JackpotState; expiresAt: number } | null = null;
+  app.get("/public/jackpot", async () => {
+    const now = Date.now();
+    if (jackpotCache && jackpotCache.expiresAt > now) return jackpotCache.state;
+
+    const [pool, winnableAtIso, winRows, seedRows] = await Promise.all([
+      ctx.ledger.getBalance(ctx.accounts.jackpot_pool),
+      getKv<string>(ctx.db, "jackpot_winnable_at"),
+      ctx.db
+        .select()
+        .from(jackpotEvents)
+        .where(eq(jackpotEvents.kind, "win"))
+        .orderBy(desc(jackpotEvents.createdAt)),
+      ctx.db
+        .select({ v: sql<string>`coalesce(sum(${jackpotEvents.amount}), 0)::text` })
+        .from(jackpotEvents)
+        .where(eq(jackpotEvents.kind, "seed")),
+    ]);
+    const winnableAt = winnableAtIso ?? new Date(now).toISOString();
+    const lastWin = winRows[0];
+    let lastWinner: JackpotState["lastWinner"] = null;
+    if (lastWin?.userId) {
+      const u = await ctx.db
+        .select({ handle: users.handle, anonymous: users.feedAnonymous })
+        .from(users)
+        .where(eq(users.id, lastWin.userId))
+        .limit(1);
+      lastWinner = {
+        handle: u[0]?.anonymous ? "a masked stranger" : (u[0]?.handle ?? "unknown"),
+        amount: lastWin.amount.toString(),
+        at: lastWin.createdAt.toISOString(),
+      };
+    }
+    const seeded = BigInt(seedRows[0]?.v ?? "0");
+    const state: JackpotState = {
+      pool: pool.toString(),
+      winnable: now >= Date.parse(winnableAt),
+      winnableAt,
+      seeded: (seeded > 0n ? seeded : JACKPOT.seedAmount).toString(),
+      hits: winRows.length,
+      lastWinner,
+    };
+    jackpotCache = { state, expiresAt: now + 10_000 };
+    return state;
+  });
 
   app.get("/public/stats", async () => {
     const now = new Date();
@@ -61,7 +112,7 @@ export default async function publicModule(app: FastifyInstance): Promise<void> 
       ? Math.max(1, Math.floor((now.getTime() - Date.parse(seasonStartIso)) / 86_400_000) + 1)
       : 1;
 
-    const [playerRows, missionTodayRows, heistRows, houndRows, distRows] = await Promise.all([
+    const [playerRows, missionTodayRows, heistRows, houndRows, distRows, jackpotPool, tierRows, premiumRows] = await Promise.all([
       ctx.db.select({ n: sql<string>`count(*)::text` }).from(users),
       ctx.db
         .select({ n: sql<string>`count(*)::text` })
@@ -79,6 +130,15 @@ export default async function publicModule(app: FastifyInstance): Promise<void> 
         .select({ v: sql<string>`coalesce(sum(${pdDistributions.distributed}), 0)::text` })
         .from(pdDistributions)
         .where(gte(pdDistributions.createdAt, weekAgo)),
+      ctx.ledger.getBalance(ctx.accounts.jackpot_pool),
+      ctx.db
+        .select({ tier: users.currentTier, n: sql<string>`count(*)::text` })
+        .from(users)
+        .groupBy(users.currentTier),
+      ctx.db
+        .select({ n: sql<string>`count(*)::text` })
+        .from(seasonPasses)
+        .where(eq(seasonPasses.premium, true)),
     ]);
 
     const houndCount = Math.max(1, Number(houndRows[0]?.n ?? "0"));
@@ -99,6 +159,10 @@ export default async function publicModule(app: FastifyInstance): Promise<void> 
       missionsToday: Number(missionTodayRows[0]?.n ?? "0"),
       biggestHeistThisWeek: BigInt(heistRows[0]?.v ?? "0").toString(),
       treasuryRake: treasuryRake.toString(),
+      // v1.1 telemetry (doc 14 §7).
+      jackpotPool: jackpotPool.toString(),
+      tierDistribution: Object.fromEntries(tierRows.map((r) => [r.tier, Number(r.n)])),
+      passPremiumCount: Number(premiumRows[0]?.n ?? "0"),
     };
     return stats;
   });

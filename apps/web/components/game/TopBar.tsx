@@ -11,6 +11,8 @@ import { disconnectWallet, truncateAddress } from "../../lib/walletStore";
 import { Logo } from "../art/Logo";
 import { BalancePill } from "../ui/BalancePill";
 import { SeasonTimer } from "../ui/SeasonTimer";
+import { HeatChip } from "./HeatMeter";
+import { TierBadge } from "./TierBadge";
 
 export function TopBar() {
   const { data: me } = useMe();
@@ -38,6 +40,8 @@ export function TopBar() {
           ["/store", "Store"],
           ["/market", "Market"],
           ["/raffles", "Raffles"],
+          ["/pass", "Pass"],
+          ["/cred", "Cred"],
           ["/leaderboard", "Ranks"],
         ].map(([href, label]) => (
           <Link key={href} href={href ?? "/"} className="rounded-lg px-2.5 py-1.5 hover:bg-surface2 hover:text-text">
@@ -47,6 +51,8 @@ export function TopBar() {
       </nav>
       <div className="ml-auto flex items-center gap-2.5">
         <SeasonTimer />
+        {me && <HeatChip />}
+        {me?.cred && <TierBadge tier={me.cred.tier} className="hidden sm:inline-flex" />}
         <BalancePill />
         {me && (
           <div className="relative">

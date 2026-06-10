@@ -4,7 +4,7 @@ import { locationConfig, toBaseUnits, type LocationConfig } from "@trash-wars/sh
 import { SEASON1, SEASON1_LOCATIONS, checkSeasonInvariant } from "./season1.js";
 
 describe("SEASON1 config", () => {
-  it("has the six S1 locations in escalation order", () => {
+  it("has the seven S1 locations in escalation order", () => {
     expect(SEASON1_LOCATIONS.map((l) => l.slug)).toEqual([
       "corner-store",
       "pawn-shop",
@@ -12,7 +12,26 @@ describe("SEASON1 config", () => {
       "armored-truck",
       "first-national",
       "the-mint",
+      "penthouse-job",
     ]);
+  });
+
+  it("v1.1: only the-mint is jackpotEligible; penthouse-job is Kingpin-gated with EV in [1.03, 1.05]", () => {
+    for (const loc of SEASON1_LOCATIONS) {
+      expect(loc.jackpotEligible ?? false).toBe(loc.slug === "the-mint");
+    }
+    const penthouse = SEASON1_LOCATIONS.find((l) => l.slug === "penthouse-job")!;
+    expect(penthouse.minTier).toBe("kingpin");
+    const evBps = penthouse.table.reduce(
+      (s, r) =>
+        s + (r.outcome === "win" || r.outcome === "jackpot" ? r.probabilityBps * (r.multiplierBps ?? 0) : 0),
+      0,
+    ) / 10_000;
+    expect(evBps).toBeGreaterThanOrEqual(10_300);
+    expect(evBps).toBeLessThanOrEqual(10_500);
+    // No jackpot row, no rekt_character — the perk is access, not a budget hazard.
+    expect(penthouse.table.some((r) => r.outcome === "jackpot")).toBe(false);
+    expect(penthouse.table.some((r) => r.outcome === "rekt_character")).toBe(false);
   });
 
   it("every probability table sums to exactly 10000 bps", () => {

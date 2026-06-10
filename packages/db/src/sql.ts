@@ -26,6 +26,7 @@ const ENUMS: ReadonlyArray<[name: string, values: readonly string[]]> = [
       "withdrawals_payable",
       "onchain_reserve_mirror",
       "burned",
+      "jackpot_pool",
     ],
   ],
   ["faction", ["raccoon", "bloodhound", "crow"]],
@@ -45,6 +46,9 @@ const ENUMS: ReadonlyArray<[name: string, values: readonly string[]]> = [
   ["raffle_state", ["upcoming", "open", "drawing", "drawn"]],
   ["listing_kind", ["character", "cosmetic"]],
   ["listing_state", ["active", "sold", "delisted"]],
+  ["jackpot_event_kind", ["seed", "win"]],
+  ["pass_track", ["free", "premium"]],
+  ["pass_reward_kind", ["cosmetic", "insurance_voucher", "raffle_fragments", "nameplate"]],
 ];
 
 const enumStatements = ENUMS.map(
@@ -54,8 +58,22 @@ const enumStatements = ENUMS.map(
       .join(", ")}); EXCEPTION WHEN duplicate_object THEN NULL; END $$`,
 );
 
+/**
+ * v1.1 enum extension for databases created before the value existed. The CREATE
+ * TYPE above is swallowed on existing DBs (duplicate_object), so the new value
+ * is added with ALTER TYPE ... ADD VALUE IF NOT EXISTS — itself idempotent, and
+ * a no-op on fresh DBs where CREATE TYPE already included it. Kept as a plain
+ * top-level statement (NOT inside a DO block): in a function/transaction context
+ * some engines reject ALTER TYPE ADD VALUE and an exception handler would
+ * silently skip the migration.
+ */
+const enumValueAdditions: readonly string[] = [
+  `ALTER TYPE "account_kind" ADD VALUE IF NOT EXISTS 'jackpot_pool'`,
+];
+
 export const SCHEMA_STATEMENTS: readonly string[] = [
   ...enumStatements,
+  ...enumValueAdditions,
 
   /* ── identity ── */
   `CREATE TABLE IF NOT EXISTS "users" (
@@ -66,9 +84,18 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     "tos_version" text,
     "feed_anonymous" boolean NOT NULL DEFAULT false,
     "frozen" boolean NOT NULL DEFAULT false,
+    "current_tier" text NOT NULL DEFAULT 'none',
+    "tier_grace_started_at" timestamptz,
+    "tier_grace_target" text,
+    "insurance_vouchers" integer NOT NULL DEFAULT 0,
     "created_at" timestamptz NOT NULL DEFAULT now(),
     "updated_at" timestamptz NOT NULL DEFAULT now()
   )`,
+  // v1.1 column additions for pre-existing databases (idempotent).
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "current_tier" text NOT NULL DEFAULT 'none'`,
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "tier_grace_started_at" timestamptz`,
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "tier_grace_target" text`,
+  `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "insurance_vouchers" integer NOT NULL DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS "wallets" (
     "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     "user_id" uuid NOT NULL REFERENCES "users"("id"),
@@ -344,6 +371,92 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     "detail" jsonb,
     "created_at" timestamptz NOT NULL DEFAULT now()
   )`,
+  /* ── v1.1 launch scope: jackpot / street cred / season pass ── */
+  `CREATE TABLE IF NOT EXISTS "jackpot_events" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "kind" "jackpot_event_kind" NOT NULL,
+    "mission_id" uuid,
+    "user_id" uuid,
+    "amount" bigint NOT NULL,
+    "pool_after" bigint NOT NULL,
+    "created_at" timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS "tier_snapshots" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "user_id" uuid NOT NULL REFERENCES "users"("id"),
+    "wallet" text,
+    "balance" bigint NOT NULL,
+    "tier" text NOT NULL,
+    "snapshotted_at" timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS "tier_snapshots_user_idx" ON "tier_snapshots" ("user_id")`,
+  `CREATE TABLE IF NOT EXISTS "tier_definitions" (
+    "tier" text PRIMARY KEY,
+    "min_balance" bigint NOT NULL,
+    "perks" jsonb NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS "season_passes" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "user_id" uuid NOT NULL REFERENCES "users"("id"),
+    "season" integer NOT NULL,
+    "premium" boolean NOT NULL DEFAULT false,
+    "purchased_at" timestamptz NOT NULL DEFAULT now(),
+    "tx_sig" text,
+    CONSTRAINT "season_passes_user_season_uq" UNIQUE ("user_id", "season")
+  )`,
+  `CREATE TABLE IF NOT EXISTS "pass_progress" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "user_id" uuid NOT NULL REFERENCES "users"("id"),
+    "season" integer NOT NULL,
+    "xp" integer NOT NULL DEFAULT 0,
+    "level" integer NOT NULL DEFAULT 0,
+    CONSTRAINT "pass_progress_user_season_uq" UNIQUE ("user_id", "season")
+  )`,
+  `CREATE TABLE IF NOT EXISTS "pass_challenges" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "season" integer NOT NULL,
+    "week" integer NOT NULL,
+    "slug" text NOT NULL UNIQUE,
+    "description" text NOT NULL,
+    "kind" text NOT NULL,
+    "ref_slug" text,
+    "target" integer NOT NULL,
+    "xp" integer NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS "pass_challenge_progress" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "user_id" uuid NOT NULL REFERENCES "users"("id"),
+    "challenge_id" uuid NOT NULL REFERENCES "pass_challenges"("id"),
+    "progress" integer NOT NULL DEFAULT 0,
+    "completed_at" timestamptz,
+    CONSTRAINT "pass_challenge_progress_user_challenge_uq" UNIQUE ("user_id", "challenge_id")
+  )`,
+  `CREATE TABLE IF NOT EXISTS "pass_rewards" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "season" integer NOT NULL,
+    "level" integer NOT NULL,
+    "track" "pass_track" NOT NULL,
+    "kind" "pass_reward_kind" NOT NULL,
+    "ref_slug" text,
+    "amount" integer,
+    CONSTRAINT "pass_rewards_season_level_track_uq" UNIQUE ("season", "level", "track")
+  )`,
+  `CREATE TABLE IF NOT EXISTS "pass_claims" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "user_id" uuid NOT NULL REFERENCES "users"("id"),
+    "reward_id" uuid NOT NULL REFERENCES "pass_rewards"("id"),
+    "claimed_at" timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT "pass_claims_user_reward_uq" UNIQUE ("user_id", "reward_id")
+  )`,
+  `CREATE TABLE IF NOT EXISTS "raffle_weekly_grants" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "user_id" uuid NOT NULL REFERENCES "users"("id"),
+    "week" text NOT NULL,
+    "raffle_id" uuid NOT NULL REFERENCES "raffles"("id"),
+    "created_at" timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT "raffle_weekly_grants_user_week_uq" UNIQUE ("user_id", "week")
+  )`,
+
   `CREATE TABLE IF NOT EXISTS "feed_events" (
     "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     "type" text NOT NULL,

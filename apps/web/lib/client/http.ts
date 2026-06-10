@@ -6,14 +6,17 @@
 import {
   character,
   feedEvent,
+  jackpotState,
   locationLive,
   meResponse,
   mission,
   missionVerify,
+  passState,
   withdrawal,
   type Character,
   type CosmeticItem,
   type FeedEvent,
+  type JackpotState,
   type LeaderboardEntry,
   type Listing,
   type LocationLive,
@@ -22,6 +25,7 @@ import {
   type Mission,
   type MissionStartRequest,
   type MissionVerify,
+  type PassState,
   type Patrol,
   type ProofOfReserves,
   type PublicStats,
@@ -47,6 +51,8 @@ export class HttpGameClient implements GameClient {
   private ws: WebSocket | null = null;
   private feedSubs = new Set<(e: FeedEvent) => void>();
   private userSubs = new Set<(e: UserEvent) => void>();
+  private jackpotSubs = new Set<(s: JackpotState) => void>();
+  private jackpotPoll: ReturnType<typeof setInterval> | null = null;
 
   constructor(baseUrl: string) {
     this.base = baseUrl.replace(/\/$/, "");
@@ -75,12 +81,16 @@ export class HttpGameClient implements GameClient {
     const ws = new WebSocket(url);
     ws.onmessage = (msg) => {
       try {
-        const data = JSON.parse(String(msg.data)) as { channel?: string; event?: unknown };
+        const data = JSON.parse(String(msg.data)) as { channel?: string; type?: string; event?: unknown };
         if (data.channel === "feed") {
           const parsed = feedEvent.safeParse(data.event);
           if (parsed.success) for (const cb of this.feedSubs) cb(parsed.data);
         } else if (data.channel === "user") {
           for (const cb of this.userSubs) cb(data.event as UserEvent);
+        } else if (data.channel === "jackpot" || data.type === "jackpot_tick") {
+          // throttled ≥10s server-side (specs/03)
+          const parsed = jackpotState.safeParse(data.event);
+          if (parsed.success) for (const cb of this.jackpotSubs) cb(parsed.data);
         }
       } catch {
         /* drop malformed frames */
@@ -88,7 +98,7 @@ export class HttpGameClient implements GameClient {
     };
     ws.onclose = () => {
       this.ws = null;
-      if (this.feedSubs.size + this.userSubs.size > 0) {
+      if (this.feedSubs.size + this.userSubs.size + this.jackpotSubs.size > 0) {
         setTimeout(() => this.ensureSocket(), 3_000);
       }
     };
@@ -121,8 +131,12 @@ export class HttpGameClient implements GameClient {
   getMission(id: string): Promise<Mission | ResolvedMission> {
     return this.req(`/game/missions/${id}`);
   }
-  buyInsurance(id: string): Promise<Mission> {
-    return this.req(`/game/missions/${id}/insurance`, { method: "POST" }, mission);
+  buyInsurance(id: string, opts?: { useVoucher?: boolean }): Promise<Mission> {
+    return this.req(
+      `/game/missions/${id}/insurance`,
+      { method: "POST", body: JSON.stringify({ useVoucher: opts?.useVoucher ?? false }) },
+      mission,
+    );
   }
   bribe(id: string): Promise<Mission> {
     return this.req(`/game/missions/${id}/bribe`, { method: "POST" }, mission);
@@ -224,6 +238,46 @@ export class HttpGameClient implements GameClient {
   }
   getProofOfReserves(): Promise<ProofOfReserves> {
     return this.req("/public/proof-of-reserves");
+  }
+
+  /* v1.1 — progressive jackpot */
+  getJackpot(): Promise<JackpotState> {
+    // unauthenticated + cached 10s server-side
+    return this.req("/public/jackpot", undefined, jackpotState);
+  }
+  onJackpotTick(cb: (state: JackpotState) => void): Unsubscribe {
+    this.jackpotSubs.add(cb);
+    this.ensureSocket();
+    // polling fallback every 30s while the socket is down/absent
+    if (!this.jackpotPoll && typeof window !== "undefined") {
+      this.jackpotPoll = setInterval(() => {
+        if (this.jackpotSubs.size === 0) return;
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+        void this.getJackpot()
+          .then((s) => {
+            for (const sub of this.jackpotSubs) sub(s);
+          })
+          .catch(() => undefined);
+      }, 30_000);
+    }
+    return () => {
+      this.jackpotSubs.delete(cb);
+      if (this.jackpotSubs.size === 0 && this.jackpotPoll) {
+        clearInterval(this.jackpotPoll);
+        this.jackpotPoll = null;
+      }
+    };
+  }
+
+  /* v1.1 — season pass */
+  getPass(): Promise<PassState> {
+    return this.req("/pass", undefined, passState);
+  }
+  buyPass(): Promise<PassState> {
+    return this.req("/pass/buy", { method: "POST" }, passState);
+  }
+  claimPassReward(rewardId: string): Promise<PassState> {
+    return this.req("/pass/claim", { method: "POST", body: JSON.stringify({ rewardId }) }, passState);
   }
 
   /* live */

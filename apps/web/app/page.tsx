@@ -11,7 +11,8 @@ import { CountdownPill } from "../components/ui/CountdownPill";
 import { ErrorState } from "../components/ui/EmptyState";
 import { HeatBadge } from "../components/ui/HeatBadge";
 import { Skeleton } from "../components/ui/Skeleton";
-import { useLocations, useMissions, useNow } from "../lib/hooks";
+import { VaultWidget } from "../components/game/VaultWidget";
+import { useJackpot, useLocations, useMissions, useNow } from "../lib/hooks";
 import { formatGameDuration } from "../lib/time";
 import { useUiStore } from "../lib/uiStore";
 
@@ -22,6 +23,7 @@ const MINI_ICON: Record<string, string> = {
   "armored-truck": "🚚",
   "first-national": "🏛️",
   "the-mint": "🌆",
+  "the-penthouse": "👑",
 };
 
 function LocationCard({ loc, onClick }: { loc: LocationLive; onClick: () => void }) {
@@ -54,6 +56,7 @@ function LocationCard({ loc, onClick }: { loc: LocationLive; onClick: () => void
 export default function CityPage() {
   const { data: locations, isLoading, isError, refetch } = useLocations();
   const { data: missions } = useMissions();
+  const { data: jackpot } = useJackpot();
   const now = useNow(1_000);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const guided = useUiStore((s) => s.guided);
@@ -95,9 +98,15 @@ export default function CityPage() {
         </div>
       ) : (
         <>
+          {/* mobile: the vault counter rides above the location list */}
+          {jackpot && (
+            <div className="md:hidden">
+              <VaultWidget pool={jackpot.pool} winnable={jackpot.winnable} winnableAt={jackpot.winnableAt} now={now} slim />
+            </div>
+          )}
           {/* desktop: illustrated map */}
           <div className="hidden md:block">
-            <CityMap locations={locations} activeMissions={active} now={now} onSelect={setSelectedSlug} />
+            <CityMap locations={locations} activeMissions={active} now={now} onSelect={setSelectedSlug} jackpot={jackpot ?? null} />
           </div>
           {/* location cards — block-by-block list on mobile, teaser row on desktop */}
           <div className={clsx("grid gap-3", "md:grid-cols-3")}>

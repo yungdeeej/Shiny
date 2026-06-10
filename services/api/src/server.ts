@@ -25,6 +25,7 @@ import bankModule from "./modules/bank.js";
 import storeModule from "./modules/store.js";
 import rafflesModule from "./modules/raffles.js";
 import marketModule from "./modules/market.js";
+import passModule from "./modules/pass.js";
 import publicModule from "./modules/public.js";
 import adminModule from "./modules/admin.js";
 import wsModule from "./modules/ws.js";
@@ -94,6 +95,7 @@ export async function build(opts: BuildOptions = {}): Promise<FastifyInstance> {
   await app.register(storeModule);
   await app.register(rafflesModule);
   await app.register(marketModule);
+  await app.register(passModule);
   await app.register(publicModule);
   await app.register(adminModule);
   await app.register(wsModule);

@@ -11,7 +11,12 @@ export interface UserEvent {
     | "patrol_ended"
     | "withdrawal_update"
     | "raffle_won"
-    | "pd_distribution";
+    | "pd_distribution"
+    /* v1.1 */
+    | "bail_paid"
+    | "raffle_tickets_bought"
+    | "jackpot_won"
+    | "pass_level_up";
   [key: string]: unknown;
 }
 
@@ -33,6 +38,24 @@ export class GameBus {
 
   emitUser(userId: string, event: UserEvent): void {
     this.emitter.emit(`user:${userId}`, event);
+    // Wildcard channel: the Season Pass XP listener fans out from here (v1.1).
+    this.emitter.emit("user:*", userId, event);
+  }
+
+  /** Subscribe to EVERY user event (Season Pass XP fan-out). */
+  onAnyUser(fn: (userId: string, event: UserEvent) => void): () => void {
+    this.emitter.on("user:*", fn);
+    return () => this.emitter.off("user:*", fn);
+  }
+
+  /** v1.1 (specs/03): the jackpot pool changed — drives the throttled ws tick. */
+  emitJackpot(): void {
+    this.emitter.emit("jackpot");
+  }
+
+  onJackpot(fn: () => void): () => void {
+    this.emitter.on("jackpot", fn);
+    return () => this.emitter.off("jackpot", fn);
   }
 
   onUser(userId: string, fn: (event: UserEvent) => void): () => void {

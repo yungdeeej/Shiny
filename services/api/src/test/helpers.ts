@@ -5,6 +5,7 @@ import type { MissionOutcome, ProbabilityTable } from "@trash-wars/shared";
 import { ledgerEntries, missions, accounts } from "@trash-wars/db";
 import { eq, sql } from "../core/orm.js";
 import { decryptSecret } from "../core/crypto.js";
+import { invalidateTierCache } from "../core/tiers.js";
 import { build, type BuildOptions } from "../server.js";
 
 export const TEST_SEED_KEY = "test-seed-key";
@@ -44,6 +45,22 @@ export async function guest(app: FastifyInstance, handle: string): Promise<TestS
 
 export function as(session: TestSession, opts: InjectOptions): InjectOptions {
   return { ...opts, cookies: session.cookies };
+}
+
+/**
+ * v1.1 test hook: pin a guest's on-chain $SHINY holding via the stub chain
+ * provider's per-address override map (wallet-less beta users resolve through
+ * the synthetic `guest:{userId}` address) and drop the tier cache.
+ */
+export function setHolding(app: FastifyInstance, session: TestSession, holding: bigint | null): void {
+  const stub = app.ctx.chain as unknown as {
+    setHoldingOverride(address: string, holding: bigint | null): void;
+  };
+  if (typeof stub.setHoldingOverride !== "function") {
+    throw new Error("setHolding requires the beta StubChainProvider");
+  }
+  stub.setHoldingOverride(`guest:${session.userId}`, holding);
+  invalidateTierCache(session.userId);
 }
 
 /** Conservation invariant: every ledger entry summed must be exactly zero. */

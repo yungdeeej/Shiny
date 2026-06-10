@@ -13,8 +13,8 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import { StatBar } from "../../components/ui/StatBar";
 import { TokenAmount } from "../../components/ui/TokenAmount";
 import { upgradeCostFor } from "../../lib/client/local/engine";
-import { useCharacters, useGameMutation, useGameQuery, useNow } from "../../lib/hooks";
-import { realMsToGameHours } from "../../lib/time";
+import { useCharacters, useGameMutation, useGameQuery, useMe, useNow } from "../../lib/hooks";
+import { formatCountdown, gameHoursToRealMs, realMsToGameHours } from "../../lib/time";
 
 const STAT_KEYS: Array<{ key: StatKey; label: string; color: string; blurb: string }> = [
   { key: "stealth", label: "Stealth", color: "bg-accent", blurb: "−1.5% arrest odds / lvl" },
@@ -25,44 +25,70 @@ const STAT_KEYS: Array<{ key: StatKey; label: string; color: string; blurb: stri
 
 function MintBanners() {
   const { data: events } = useGameQuery(["mints"], (c) => c.getMintEvents(), { refetchInterval: 10_000 });
+  const { data: me } = useMe();
+  const now = useNow(1_000);
   const [revealed, setRevealed] = useState<Character | null>(null);
   const mint = useGameMutation((c, id: string) => c.mint(id), ["characters", "me", "mints"], {
     onSuccess: (ch) => setRevealed(ch),
   });
   if (!events) return null;
+  const earlyHours = me?.cred?.perks.mintEarlyAccessHours ?? 0;
   return (
     <>
       <div className="grid gap-3 md:grid-cols-2">
-        {events.map((e) => (
-          <div
-            key={e.id}
-            className={clsx(
-              "card flex items-center gap-4 p-4",
-              e.faction === "bloodhound" ? "border-pd/40" : "border-accent/40",
-            )}
-          >
-            <span className="text-3xl" aria-hidden>{e.faction === "bloodhound" ? "🐕" : "🦝"}</span>
-            <div className="min-w-0 flex-1">
-              <div className="font-display text-sm capitalize">{e.faction} mint wave</div>
-              <div className="text-xs text-muted">
-                {e.remaining}/{e.supply} left · Minting burns{" "}
-                <span className="font-bold text-accent">{formatShiny(e.price, { compact: true })} $SHINY</span>. Forever. 🔥
-              </div>
-              {e.faction === "bloodhound" && (
-                <div className="text-[10px] text-pd">Force capped at 10% of living characters.</div>
+        {events.map((e) => {
+          const isWave = e.id.startsWith("mint-wave");
+          const publicOpensAt = Date.parse(e.opensAt);
+          const myOpensAt = isWave ? publicOpensAt - gameHoursToRealMs(earlyHours) : publicOpensAt;
+          const upcoming = e.state === "upcoming";
+          return (
+            <div
+              key={e.id}
+              className={clsx(
+                "card flex items-center gap-4 p-4",
+                e.faction === "bloodhound" ? "border-pd/40" : isWave ? "border-jackpot/40" : "border-accent/40",
               )}
-            </div>
-            <Button
-              size="sm"
-              variant={e.faction === "bloodhound" ? "pd" : "primary"}
-              disabled={e.state !== "open"}
-              loading={mint.isPending}
-              onClick={() => mint.mutate(e.id)}
             >
-              {e.state === "open" ? "Mint" : "Sold out"}
-            </Button>
-          </div>
-        ))}
+              <span className="text-3xl" aria-hidden>{e.faction === "bloodhound" ? "🐕" : isWave ? "📦" : "🦝"}</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-display text-sm capitalize">
+                  {isWave ? "Limited wave — 50 crates" : `${e.faction} mint wave`}
+                </div>
+                <div className="text-xs text-muted">
+                  {e.remaining}/{e.supply} left · Minting burns{" "}
+                  <span className="font-bold text-accent">{formatShiny(e.price, { compact: true })} $SHINY</span>. Forever. 🔥
+                </div>
+                {e.faction === "bloodhound" && (
+                  <div className="text-[10px] text-pd">Force capped at 10% of living characters.</div>
+                )}
+                {/* v1.1 — District+ early-access countdown (specs/01) */}
+                {isWave && upcoming && (
+                  <div className={clsx("mt-1 text-[11px] font-semibold", earlyHours > 0 ? "text-accent" : "text-muted")}>
+                    {earlyHours > 0 ? (
+                      <>Your District access opens in {formatCountdown(myOpensAt - now)}</>
+                    ) : (
+                      <>Public open in {formatCountdown(publicOpensAt - now)} — District cred gets in 1h early</>
+                    )}
+                  </div>
+                )}
+                {isWave && e.state === "open" && earlyHours > 0 && now < publicOpensAt && (
+                  <div className="mt-1 text-[11px] font-semibold text-success">
+                    Early door is open — public joins in {formatCountdown(publicOpensAt - now)}
+                  </div>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant={e.faction === "bloodhound" ? "pd" : "primary"}
+                disabled={e.state !== "open"}
+                loading={mint.isPending}
+                onClick={() => mint.mutate(e.id)}
+              >
+                {e.state === "open" ? "Mint" : upcoming ? "Locked" : "Sold out"}
+              </Button>
+            </div>
+          );
+        })}
       </div>
       <Sheet open={revealed !== null} onClose={() => setRevealed(null)} title="The crate creaks open…">
         {revealed && (

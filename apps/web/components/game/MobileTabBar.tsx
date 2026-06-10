@@ -14,6 +14,8 @@ const TABS = [
 ] as const;
 
 const MORE = [
+  { href: "/pass", label: "Season Pass", icon: "🔥", hint: "Heat levels, rewards & challenges" },
+  { href: "/cred", label: "Street Cred", icon: "👑", hint: "Holder tiers — status & access" },
   { href: "/precinct", label: "Precinct", icon: "🐕", hint: "Bloodhound HQ & patrols" },
   { href: "/jail", label: "Jail", icon: "🚔", hint: "Bail out your crew" },
   { href: "/raffles", label: "Raffles", icon: "🎟️", hint: "Burn tickets, win recruits" },

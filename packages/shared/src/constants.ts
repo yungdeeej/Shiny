@@ -25,7 +25,10 @@ export const POLICY = {
   // capital (~13k SHINY/day at 2k DAU), so the PD routing shares are deliberately
   // thin slivers of the (much larger) daily loss flows. Everything else burns.
   bailSplit: { burnBps: 9_900, pdBps: 100 }, // was 75/25 — bail volume is huge, so 1% is plenty
-  lossSplit: { burnBps: 9_950, pdBps: 50 }, // was 50/50 — primary APR lever
+  // v1.1: 5% of every lost stake feeds the progressive jackpot (specs/03).
+  // Doc 14's 45/50/5 was written pre-APR-tune; the PD sliver stays at the
+  // S1 v2 level so the 35-45% hound APR band holds — burn gives up the 5pts.
+  lossSplit: { burnBps: 9_450, pdBps: 50, jackpotBps: 500 }, // v1.0: 50/50 · S1v2: 99.5/0.5
   bribeSplit: { burnBps: 7_500, patrolBps: 2_500 },
   patrolShiftHours: 6,
   patrolBountyBps: 100, // 1% of patrolled-location confiscations to the shift (was 40%)

@@ -83,7 +83,7 @@ describe("mission lifecycle", () => {
     expect(await ledgerTotal(app)).toBe(0n);
   });
 
-  it("arrest: stake returned, character jailed, bail releases (99/1 burn/pd)", async () => {
+  it("arrest: stake returned, character jailed, bail releases (99/1 burn/pd, Block −10%)", async () => {
     const session = await guest(app, "racc_arrest");
     const characterId = await myRaccoon(session);
     const before = await userBalance(app, session.userId);
@@ -109,8 +109,11 @@ describe("mission lifecycle", () => {
     expect(bail.statusCode).toBe(200);
     char = (await app.inject(as(session, { method: "GET", url: "/game/characters" }))).json()[0];
     expect(char.status).toBe("idle");
-    expect((await systemBalance(app, "burn_pool")) - burnBefore).toBe(toBaseUnits(1_485)); // 99% (S1 v2)
-    expect((await systemBalance(app, "pd_pool")) - pdBefore).toBe(toBaseUnits(15)); // 1% (S1 v2)
+    // v1.1: beta guests hold 50k (stub) → Block tier → 10% off the 1500 bail.
+    const price = toBaseUnits(1_350);
+    expect(BigInt(bail.json().price)).toBe(price);
+    expect((await systemBalance(app, "burn_pool")) - burnBefore).toBe((price * 9_900n) / 10_000n); // 99%
+    expect((await systemBalance(app, "pd_pool")) - pdBefore).toBe(price - (price * 9_900n) / 10_000n); // 1%
     expect(await ledgerTotal(app)).toBe(0n);
   });
 

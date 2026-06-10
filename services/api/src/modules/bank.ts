@@ -1,9 +1,9 @@
 /** Bank module: deposits (beta = instant credit), withdrawals, proof of reserves. */
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify";
-import { withdrawalTax } from "@trash-wars/economy";
 import { isValidSolanaAddress } from "@trash-wars/chain";
 import {
+  applyBps,
   depositIntentRequest,
   withdrawRequest,
   type ProofOfReserves,
@@ -22,6 +22,7 @@ import { getFlag } from "../core/config.js";
 import { getUserAccount, unlockedBalance } from "../core/accounts.js";
 import { newMemoCode } from "../core/bootstrap.js";
 import { tickProofOfReserves } from "../core/scheduler.js";
+import { resolveTier } from "../core/tiers.js";
 import { utcDayKey } from "../core/time.js";
 import { complianceGate, requireNotFrozen, requireTos } from "./session.js";
 
@@ -152,7 +153,10 @@ export default async function bankModule(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const fee = withdrawalTax(amount);
+    // v1.1 (specs/01): withdrawal fee bps = f(Street Cred tier) — 5% base,
+    // 4% District, 3% Borough, 2% Kingpin. Bigint floor semantics via applyBps.
+    const cred = await resolveTier(ctx, user.id);
+    const fee = applyBps(amount, cred.perks.withdrawalFeeBps);
     const net = amount - fee;
     const id = randomUUID();
 

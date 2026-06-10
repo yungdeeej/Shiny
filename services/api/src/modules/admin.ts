@@ -6,8 +6,10 @@ import {
   computeEvBps,
 } from "@trash-wars/economy";
 import {
+  CRED_POLICY,
   adminFreezeRequest,
   adminPauseRequest,
+  adminTierRequest,
   adminTuneRequest,
   locationConfig,
   toBaseUnits,
@@ -18,10 +20,11 @@ import {
   locations,
   pendingChanges,
   sybilFlags,
+  tierDefinitions,
   users,
   withdrawals,
 } from "@trash-wars/db";
-import { and, desc, eq } from "../core/orm.js";
+import { and, desc, eq, sql } from "../core/orm.js";
 import { badRequest, notFound } from "../core/errors.js";
 import { setKv, getKv } from "../core/config.js";
 import { getUserAccount, unlockedBalance } from "../core/accounts.js";
@@ -134,6 +137,63 @@ export default async function adminModule(app: FastifyInstance): Promise<void> {
     );
     await audit(admin.handle, "withdrawal_deny", { id: wd.id, refunded: wd.amount.toString() });
     return { ok: true, refunded: wd.amount.toString() };
+  });
+
+  // v1.1 (specs/01): tier thresholds move EITHER way, but ONLY behind 7-day
+  // public notice — same pending_changes sweep as the emissions ratchet.
+  // Direct/immediate changes are rejected at the API.
+  app.post("/admin/tiers", async (request) => {
+    const admin = requireAdmin(request);
+    const { tier, minBalance, effectiveAt } = adminTierRequest.parse(request.body);
+    if (tier === "none") throw badRequest("BAD_TIER", "the 'none' tier has no threshold");
+    const existing = await ctx.db
+      .select()
+      .from(tierDefinitions)
+      .where(eq(tierDefinitions.tier, tier))
+      .limit(1);
+    if (!existing[0]) throw notFound(`unknown tier ${tier}`);
+
+    const noticeMs = CRED_POLICY.thresholdNoticeDays * 24 * 3_600_000;
+    const earliest = Date.now() + noticeMs;
+    const requested = effectiveAt ? Date.parse(effectiveAt) : earliest;
+    // 1-minute clock tolerance; anything sooner is a notice violation.
+    if (requested < earliest - 60_000) {
+      throw badRequest(
+        "NOTICE_REQUIRED",
+        `tier threshold changes require ${CRED_POLICY.thresholdNoticeDays}-day public notice`,
+      );
+    }
+    const effective = new Date(requested);
+    await ctx.db.insert(pendingChanges).values({
+      key: `tier:${tier}`,
+      value: minBalance,
+      effectiveAt: effective,
+    });
+    await audit(admin.handle, "tier_threshold_pending", {
+      tier,
+      minBalance,
+      effectiveAt: effective.toISOString(),
+    });
+    return { ok: true, applied: false, effectiveAt: effective.toISOString() };
+  });
+
+  app.get("/admin/tiers", async (request) => {
+    requireAdmin(request);
+    const [defs, pending] = await Promise.all([
+      ctx.db.select().from(tierDefinitions),
+      ctx.db
+        .select()
+        .from(pendingChanges)
+        .where(and(eq(pendingChanges.applied, false), sql`${pendingChanges.key} like 'tier:%'`)),
+    ]);
+    return {
+      tiers: defs.map((d) => ({ tier: d.tier, minBalance: d.minBalance.toString(), perks: d.perks })),
+      pending: pending.map((p) => ({
+        tier: p.key.slice("tier:".length),
+        minBalance: String(p.value),
+        effectiveAt: p.effectiveAt.toISOString(),
+      })),
+    };
   });
 
   app.post("/admin/tune", async (request) => {

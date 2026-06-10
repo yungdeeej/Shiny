@@ -1,14 +1,19 @@
 "use client";
 
 import { SEASON1_LOCATIONS, applyPatrolModifiers, sha256Hex } from "@trash-wars/economy";
-import type { Character, HeatBand, Mission, MissionOutcome, MissionResult } from "@trash-wars/shared";
+import type { Character, CredTier, HeatBand, Mission, MissionOutcome, MissionResult, PassState } from "@trash-wars/shared";
 import Link from "next/link";
 import React, { useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { CharacterAvatar } from "../../components/art/CharacterAvatar";
 import { Logo, ShinyGlyph } from "../../components/art/Logo";
+import { HeatRing } from "../../components/game/HeatMeter";
+import { PassRewardRail } from "../../components/game/PassRewardRail";
 import { ResultTakeover } from "../../components/game/ResultTakeover";
 import { SuspenseModal } from "../../components/game/SuspenseModal";
+import { TierBadge } from "../../components/game/TierBadge";
+import { VaultWidget } from "../../components/game/VaultWidget";
+import { PASS_REWARDS } from "../../lib/client/local/content";
 import { Button } from "../../components/ui/Button";
 import { CharacterCard } from "../../components/ui/CharacterCard";
 import { CountdownPill } from "../../components/ui/CountdownPill";
@@ -60,10 +65,24 @@ const OUTCOMES: Array<{ outcome: MissionOutcome; label: string; insured?: boolea
   { outcome: "rekt_character", label: "REKT + insurance", insured: true },
 ];
 
-function fakeResolution(outcome: MissionOutcome, insured: boolean): { mission: Mission; result: MissionResult } {
+/** Synthetic pass state for the rail demo: level 12, premium off. */
+function fakePass(level: number, premium: boolean): Pick<PassState, "rewards" | "level" | "premium"> {
+  const claimedBelow = Math.max(0, level - 4);
+  return {
+    level,
+    premium,
+    rewards: PASS_REWARDS.map((r) => {
+      const claimed = r.level <= claimedBelow && (r.track === "free" || premium);
+      const claimable = !claimed && r.level <= level && (r.track === "free" || premium);
+      return { ...r, claimed, claimable };
+    }),
+  };
+}
+
+function fakeResolution(outcome: MissionOutcome, insured: boolean, vault = false): { mission: Mission; result: MissionResult } {
   const loc = SEASON1_LOCATIONS[5]!;
   const mission: Mission = {
-    id: `sink-mission-${outcome}-${insured}`,
+    id: `sink-mission-${outcome}-${insured}-${vault}`,
     locationSlug: loc.slug,
     characterId: "sink-raccoon-1",
     stake: "25000000000",
@@ -83,7 +102,12 @@ function fakeResolution(outcome: MissionOutcome, insured: boolean): { mission: M
     outcome,
     payout,
     serverSeed: sha256Hex("sink-seed"),
-    detail: { multiplierBps: outcome === "jackpot" ? 120_000 : outcome === "win" ? 50_000 : null, insuranceSaved: insured || undefined },
+    detail: {
+      multiplierBps: outcome === "jackpot" ? 120_000 : outcome === "win" ? 50_000 : null,
+      insuranceSaved: insured || undefined,
+      // v1.1 — the `vault` takeover variant triggers on a jackpot-pool payout
+      jackpotPool: vault ? "2641880000000" : undefined,
+    },
   };
   return { mission, result };
 }
@@ -124,8 +148,55 @@ export default function KitchenSinkPage() {
               {o.label}
             </Button>
           ))}
+          <Button
+            variant="ghost"
+            className="border-accent/60 text-accent"
+            onClick={() => setTakeover(fakeResolution("jackpot", false, true))}
+          >
+            🏦 THE VAULT (pool win)
+          </Button>
           <Button variant="ghost" onClick={() => setShowCam(true)}>SECURITY CAM (3.5s)</Button>
         </div>
+      </Section>
+
+      <Section title="VaultWidget — boarded / live / slim">
+        <div className="grid gap-3 md:grid-cols-2">
+          <VaultWidget pool="2871354000000" winnable={false} winnableAt={new Date(Date.now() + 9 * 60_000).toISOString()} now={Date.now()} />
+          <VaultWidget pool="2871354000000" winnable={true} />
+        </div>
+        <VaultWidget slim pool="2871354000000" winnable={false} winnableAt={new Date(Date.now() + 9 * 60_000).toISOString()} now={Date.now()} />
+        <VaultWidget slim pool="2871354000000" winnable={true} />
+      </Section>
+
+      <Section title="Street Cred — tier badges">
+        <div className="flex flex-wrap items-center gap-2">
+          {(["alley", "block", "district", "borough", "kingpin"] as CredTier[]).map((t) => (
+            <TierBadge key={t} tier={t} asLink={false} />
+          ))}
+          <TierBadge tier="none" asLink={false} />
+        </div>
+        <div className="card max-w-md p-4 text-sm" role="alert">
+          <span className="font-bold text-danger">All crews are out.</span>{" "}
+          <span className="text-muted">
+            1/1 job running. Street Cred <span className="font-bold text-accent underline">Block</span> unlocks a second job.
+          </span>
+        </div>
+      </Section>
+
+      <Section title="Heat Meter — levels">
+        <div className="flex flex-wrap items-end gap-4">
+          <HeatRing level={0} xpIntoLevel={40} xpPerLevel={100} size={90} />
+          <HeatRing level={7} xpIntoLevel={65} xpPerLevel={100} size={110} />
+          <HeatRing level={23} xpIntoLevel={10} xpPerLevel={100} size={128} />
+          <HeatRing level={50} xpIntoLevel={100} xpPerLevel={100} size={128} />
+        </div>
+      </Section>
+
+      <Section title="Pass reward rail — free user lvl 12 / premium lvl 12">
+        <div className="noir-label">free track only (premium locked)</div>
+        <PassRewardRail pass={fakePass(12, false)} onClaim={() => toast("Claimed (sink).", "success")} />
+        <div className="noir-label pt-2">premium owner (claimed through 8, claimable to 12)</div>
+        <PassRewardRail pass={fakePass(12, true)} onClaim={() => toast("Claimed (sink).", "success")} />
       </Section>
 
       <Section title="Avatars — 12 random dna">

@@ -20,9 +20,9 @@ export interface SimOptions {
 }
 
 /** Double-entry style ledger. Invariant (asserted every simulated day):
- *  deposited + emissionsSpent === playerBalances + burned + pdPool + treasury + withdrawn */
+ *  deposited + emissionsSpent === playerBalances + burned + pdPool + jackpotPool + treasury + withdrawn */
 export interface Ledger {
-  /** External tokens brought into the game (market buys / bankrolls / mints). */
+  /** External tokens brought into the game (market buys / bankrolls / mints / jackpot seed). */
   deposited: bigint;
   /** Season emissions actually paid out (idle accrual + win excess). */
   emissionsSpent: bigint;
@@ -30,6 +30,8 @@ export interface Ledger {
   burned: bigint;
   /** PD confiscation pool awaiting daily distribution to Bloodhounds. */
   pdPool: bigint;
+  /** v1.1 progressive jackpot pool: 2M day-0 seed + 5% of lost stakes (specs/03). */
+  jackpotPool: bigint;
   /** Withdrawal-tax rake (team revenue). */
   treasury: bigint;
   /** Net tokens withdrawn off-game (after tax). */
@@ -58,6 +60,12 @@ export interface DayRow extends Ledger {
   dailyLossVolume: bigint;
   /** Total stake volume across all missions today. */
   dailyStakeVolume: bigint;
+  /** 5% loss-split inflow to the jackpot pool today. */
+  dailyJackpotIn: bigint;
+  /** Pool paid out to jackpot winners today (pool − 10% floor per hit). */
+  dailyJackpotPaid: bigint;
+  /** Pool hits today (jackpot outcome at a jackpotEligible location, day ≥ 56). */
+  jackpotHits: number;
   missions: number;
   arrests: number;
   confiscations: number;
@@ -85,4 +93,10 @@ export interface SimResult {
   options: SimOptions & { mix: Record<Archetype, number> };
   rows: DayRow[];
   notes: string[];
+  /**
+   * Static Street Cred tier distribution implied by the archetype mix (specs/01):
+   * each archetype is assigned an assumed wallet-held $SHINY balance and mapped
+   * through the shared tierForHolding. Reporting only — no sim behavior changes.
+   */
+  tierDistribution: Record<string, number>;
 }

@@ -1,11 +1,15 @@
 "use client";
 
-import { formatShiny } from "@trash-wars/shared";
+import { makeRng } from "@trash-wars/economy";
+import { formatShiny, type CredTier } from "@trash-wars/shared";
 import React from "react";
+import { TIER_LABEL, TIER_STYLE } from "../../components/game/TierBadge";
+import { VaultWidget } from "../../components/game/VaultWidget";
 import { ErrorState } from "../../components/ui/EmptyState";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { weeklyBurns } from "../../lib/client/local/bots";
-import { useGameQuery, useNow } from "../../lib/hooks";
+import { useGameQuery, useJackpot, useNow } from "../../lib/hooks";
+import { timeAgo } from "../../lib/time";
 
 /** SVG supply donut: circulating vs burned (of an illustrative float). */
 function SupplyDonut({ circulating, burned }: { circulating: bigint; burned: bigint }) {
@@ -33,9 +37,23 @@ function SupplyDonut({ circulating, burned }: { circulating: bigint; burned: big
   );
 }
 
+/** Plausible holder-tier histogram, faked deterministically for the demo. */
+function tierDistribution(players: number): Array<{ tier: CredTier; count: number }> {
+  const rng = makeRng("tier-distribution");
+  const shares: Array<[CredTier, number]> = [
+    ["alley", 0.61 + rng() * 0.04],
+    ["block", 0.22 + rng() * 0.02],
+    ["district", 0.09 + rng() * 0.01],
+    ["borough", 0.04],
+    ["kingpin", 0.012],
+  ];
+  return shares.map(([tier, share]) => ({ tier, count: Math.max(1, Math.round(players * share)) }));
+}
+
 export default function TransparencyPage() {
   const { data: stats, isLoading, isError, refetch } = useGameQuery(["public-stats"], (c) => c.getPublicStats(), { refetchInterval: 10_000 });
-  const now = useNow(60_000);
+  const { data: jackpot } = useJackpot();
+  const now = useNow(1_000);
   const burns = weeklyBurns(now);
 
   if (isError) return <ErrorState message="The auditors are asleep." retry={() => void refetch()} />;
@@ -110,6 +128,66 @@ export default function TransparencyPage() {
             <div className="mt-1 font-display text-xl">{s.value}</div>
           </div>
         ))}
+      </div>
+
+      {/* v1.1 — progressive jackpot pool + hits */}
+      {jackpot && (
+        <div className="space-y-2">
+          <div className="noir-label">The Mint vault — progressive jackpot</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <VaultWidget pool={jackpot.pool} winnable={jackpot.winnable} winnableAt={jackpot.winnableAt} now={now} />
+            <div className="card space-y-2.5 p-4 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted">Seeded at TGE</span>
+                <span className="font-bold tabular-nums">{formatShiny(jackpot.seeded, { compact: true })} ✦</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">Feeds from</span>
+                <span className="font-bold">5% of every lost stake</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">Vault hits</span>
+                <span className="font-bold tabular-nums">{jackpot.hits}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted">Last winner</span>
+                {jackpot.lastWinner ? (
+                  <span className="text-right">
+                    <span className="font-bold text-accent">{jackpot.lastWinner.handle}</span>{" "}
+                    <span className="tabular-nums">{formatShiny(jackpot.lastWinner.amount, { compact: true })} ✦</span>
+                    <span className="block text-[10px] text-muted">{timeAgo(jackpot.lastWinner.at, now)}</span>
+                  </span>
+                ) : (
+                  <span className="text-muted">nobody yet — the pool never resets below the 10% floor</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* v1.1 — street cred tier distribution (demo: plausible synthetic histogram) */}
+      <div className="space-y-2">
+        <div className="noir-label">Street Cred — holder tiers</div>
+        <div className="card space-y-2 p-4">
+          {(() => {
+            const dist = tierDistribution(stats.players);
+            const max = Math.max(...dist.map((d) => d.count), 1);
+            return dist.map((d) => (
+              <div key={d.tier} className="flex items-center gap-3 text-xs">
+                <span className={`w-16 font-semibold ${TIER_STYLE[d.tier].text}`}>{TIER_LABEL[d.tier]}</span>
+                <div className="h-3 flex-1 overflow-hidden rounded-full bg-surface2">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-accent/50 to-accent"
+                    style={{ width: `${(d.count / max) * 100}%` }}
+                  />
+                </div>
+                <span className="w-14 text-right tabular-nums text-muted">{d.count.toLocaleString("en-US")}</span>
+              </div>
+            ));
+          })()}
+          <p className="pt-1 text-[10px] text-muted/60">Holdings are wallet-held and on-chain — the game never touches them.</p>
+        </div>
       </div>
 
       {/* weekly burn history */}

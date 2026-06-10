@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { tokenAmount } from "./amounts.js";
 import { statKey } from "./game.js";
+import { credTier } from "./cred.js";
 
 /* ── auth / me ────────────────────────────────────────────────────── */
 
@@ -54,6 +55,20 @@ export const adminTuneRequest = z.object({
   locationSlug: z.string(),
   patch: z.record(z.unknown()),
 });
+
+/** v1.1 (specs/01): tier threshold change — ALWAYS behind 7-day public notice. */
+export const adminTierRequest = z.object({
+  tier: credTier,
+  minBalance: tokenAmount,
+  /** Optional explicit effective time; rejected when sooner than the notice window. */
+  effectiveAt: z.string().datetime().optional(),
+});
+
+/** v1.1 (specs/02): mission insurance, optionally paid with a pass voucher. */
+export const insuranceRequest = z.object({ useVoucher: z.boolean().optional() });
+
+/** v1.1 (specs/02): pass reward claim. */
+export const passClaimRequest = z.object({ rewardId: z.string().uuid() });
 
 /* ── queries ──────────────────────────────────────────────────────── */
 

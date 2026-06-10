@@ -2,6 +2,7 @@ import type {
   Character,
   CosmeticItem,
   FeedEvent,
+  JackpotState,
   LeaderboardEntry,
   Listing,
   LocationLive,
@@ -11,6 +12,7 @@ import type {
   MissionResult,
   MissionStartRequest,
   MissionVerify,
+  PassState,
   Patrol,
   ProofOfReserves,
   PublicStats,
@@ -46,7 +48,9 @@ export type UserEvent =
   | { type: "jail_released"; characterId: string; characterName: string }
   | { type: "patrol_ended"; patrol: Patrol; bounty: string }
   | { type: "raffle_drawn"; raffle: Raffle; won: boolean }
-  | { type: "listing_sold"; listing: Listing; net: string };
+  | { type: "listing_sold"; listing: Listing; net: string }
+  /** v1.1 — Season Pass Heat level increased (triggers the level-up toast). */
+  | { type: "pass_level_up"; level: number };
 
 export type Unsubscribe = () => void;
 
@@ -76,7 +80,7 @@ export interface GameClient {
   startMission(req: MissionStartRequest): Promise<Mission>;
   getMissions(): Promise<MissionsResponse>;
   getMission(id: string): Promise<Mission | ResolvedMission>;
-  buyInsurance(id: string): Promise<Mission>;
+  buyInsurance(id: string, opts?: { useVoucher?: boolean }): Promise<Mission>;
   bribe(id: string): Promise<Mission>;
   verifyMission(id: string): Promise<MissionVerify>;
 
@@ -116,10 +120,27 @@ export interface GameClient {
   getPublicStats(): Promise<PublicStats>;
   getProofOfReserves(): Promise<ProofOfReserves>;
 
+  /* v1.1 — progressive jackpot (specs/03) */
+  getJackpot(): Promise<JackpotState>;
+  /** Live pool ticks: ws `jackpot_tick` on the real API, engine pushes locally. */
+  onJackpotTick(cb: (state: JackpotState) => void): Unsubscribe;
+
+  /* v1.1 — season pass (specs/02) */
+  getPass(): Promise<PassState>;
+  buyPass(): Promise<PassState>;
+  claimPassReward(rewardId: string): Promise<PassState>;
+
   /* live */
   onFeed(cb: (event: FeedEvent) => void): Unsubscribe;
   onUserEvent(cb: (event: UserEvent) => void): Unsubscribe;
 
   /** Owned cosmetics not currently equipped anywhere (local inventory). */
   getInventory(): Promise<string[]>;
+
+  /**
+   * DEMO ONLY (Street Cred beta simulator): set the simulated on-chain wallet
+   * holding — the beta's stand-in for buying $SHINY on Jupiter. Absent on the
+   * real API client, where holdings are read from the chain.
+   */
+  simulateHolding?(amount: string): Promise<MeResponse>;
 }

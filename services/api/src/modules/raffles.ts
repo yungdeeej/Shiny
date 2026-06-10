@@ -60,7 +60,9 @@ export default async function rafflesModule(app: FastifyInstance): Promise<void>
       .select({ n: count() })
       .from(loginFragments)
       .where(eq(loginFragments.userId, userId));
-    const total = BigInt(fragRows[0]?.n ?? 0);
+    // v1.1 (specs/02): Season Pass raffle_fragments rewards add to the same pool.
+    const bonus = await getCounter(ctx.db, `pass_fragments:${userId}`);
+    const total = BigInt(fragRows[0]?.n ?? 0) + bonus;
     const used = await getCounter(ctx.db, `fragments_used:${userId}`);
     const available = total - used;
     if (available < 5n) return;
@@ -170,6 +172,12 @@ export default async function rafflesModule(app: FastifyInstance): Promise<void>
         refId: raffle.id,
       },
     );
+    // v1.1 (specs/02): pass XP event (5 XP/ticket, capped 25/day in the listener).
+    ctx.bus.emitUser(user.id, {
+      type: "raffle_tickets_bought",
+      raffleId: raffle.id,
+      count: buyCount,
+    });
     return { ok: true, myTickets: newTotal };
   });
 

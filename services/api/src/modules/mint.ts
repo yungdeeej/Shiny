@@ -8,6 +8,7 @@ import { conflict, insufficientFunds, notFound } from "../core/errors.js";
 import { getUserAccount, unlockedBalance } from "../core/accounts.js";
 import { createCharacter, characterToApi } from "../core/characters.js";
 import { publishFeed, amountBand } from "../core/feed.js";
+import { resolveTier } from "../core/tiers.js";
 import { complianceGate, requireNotFrozen, requireTos } from "./session.js";
 
 type MintEventRow = typeof mintEvents.$inferSelect;
@@ -62,8 +63,20 @@ export default async function mintModule(app: FastifyInstance): Promise<void> {
     const rows = await ctx.db.select().from(mintEvents).where(eq(mintEvents.id, eventId)).limit(1);
     const event = rows[0];
     if (!event) throw notFound("mint event not found");
-    if (liveState(event) !== "open") {
-      throw conflict("MINT_NOT_OPEN", `mint event is ${liveState(event)}`);
+    const state = liveState(event);
+    if (state === "upcoming") {
+      // v1.1 (specs/01): District+ mint from opensAt − mintEarlyAccessHours
+      // (game-hours); everyone else waits for the public open.
+      const cred = await resolveTier(ctx, user.id);
+      const earlyMs = ctx.clock.gameHoursToMs(cred.perks.mintEarlyAccessHours);
+      const inEarlyWindow =
+        cred.perks.mintEarlyAccessHours > 0 &&
+        Date.now() >= event.opensAt.getTime() - earlyMs;
+      if (!inEarlyWindow || event.remaining <= 0) {
+        throw conflict("MINT_NOT_OPEN", "mint event is upcoming");
+      }
+    } else if (state !== "open") {
+      throw conflict("MINT_NOT_OPEN", `mint event is ${state}`);
     }
     if (event.faction === "bloodhound" && (await bloodhoundCapReached(ctx))) {
       throw conflict("BLOODHOUND_CAP", "bloodhounds are capped at 10% of living characters");

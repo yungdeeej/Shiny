@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { makeRng } from "@trash-wars/economy";
+import { makeRng, splitLoss } from "@trash-wars/economy";
+import { JACKPOT } from "@trash-wars/shared";
 import { missionOutcomes, missions } from "@trash-wars/db";
-import { count, eq, sql } from "../core/orm.js";
+import { count, eq, inArray, sql } from "../core/orm.js";
 import { settleDueMissions, settleMission } from "../core/settle.js";
 import {
   buildTestApp,
@@ -97,6 +98,18 @@ describe("property: 300 random missions conserve the ledger exactly", () => {
     // Invariants.
     expect(await ledgerTotal(app)).toBe(0n);
     expect(await systemBalance(app, "mission_escrow")).toBe(0n);
+
+    // v1.1 jackpot_pool conservation: with no patrols active, the pool is the
+    // 2M seed plus EXACTLY the 5% splitLoss slice of every lost stake.
+    const lossRows = await app.ctx.db
+      .select({ stake: missions.stake })
+      .from(missionOutcomes)
+      .innerJoin(missions, eq(missions.id, missionOutcomes.missionId))
+      .where(inArray(missionOutcomes.outcome, ["confiscation", "rekt_items", "rekt_character"]));
+    let expectedPool = JACKPOT.seedAmount;
+    for (const row of lossRows) expectedPool += splitLoss(row.stake).jackpot;
+    expect(lossRows.length).toBeGreaterThan(0);
+    expect(await systemBalance(app, "jackpot_pool")).toBe(expectedPool);
 
     const settledRows = await app.ctx.db.select({ n: count() }).from(missionOutcomes);
     const missionRows = await app.ctx.db

@@ -9,10 +9,13 @@ import {
 } from "@trash-wars/economy";
 import {
   POLICY,
+  TIER_DEFINITIONS,
   ZERO_STATS,
   formatShiny,
+  nextTier,
   toBaseUnits,
   type Character,
+  type CredTier,
   type LocationLive,
   type Mission,
 } from "@trash-wars/shared";
@@ -20,7 +23,8 @@ import clsx from "clsx";
 import Link from "next/link";
 import React, { useMemo, useState } from "react";
 import { LOCAL_POLICY } from "../../lib/client/local/content";
-import { useCharacters, useGameMutation, useMe } from "../../lib/hooks";
+import { useCharacters, useGameMutation, useMe, useMissions, usePass } from "../../lib/hooks";
+import { TIER_LABEL } from "./TierBadge";
 import { formatGameDuration } from "../../lib/time";
 import { useUiStore } from "../../lib/uiStore";
 import { CharacterAvatar } from "../art/CharacterAvatar";
@@ -40,6 +44,14 @@ function GuideTip({ children, show }: { children: React.ReactNode; show: boolean
   );
 }
 
+/** First tier above `tier` that adds a mission slot (slot-limit upsell copy). */
+function slotUnlockTier(tier: CredTier): { tier: CredTier; slots: number } | null {
+  const current = TIER_DEFINITIONS[tier].perks.missionSlots;
+  let t = nextTier(tier);
+  while (t && TIER_DEFINITIONS[t].perks.missionSlots <= current) t = nextTier(t);
+  return t ? { tier: t, slots: TIER_DEFINITIONS[t].perks.missionSlots } : null;
+}
+
 export function MissionSheet({ location, open, onClose }: {
   location: LocationLive | null;
   open: boolean;
@@ -47,14 +59,24 @@ export function MissionSheet({ location, open, onClose }: {
 }) {
   const { data: me } = useMe();
   const { data: characters } = useCharacters();
+  const { data: missions } = useMissions();
+  const { data: pass } = usePass();
   const guided = useUiStore((s) => s.guided);
   const setGuided = useUiStore((s) => s.setGuided);
 
   const [selected, setSelected] = useState<string | "free" | null>(null);
   const [stakeWhole, setStakeWhole] = useState("");
   const [insured, setInsured] = useState(false);
+  const [useVoucher, setUseVoucher] = useState(false);
   const [bribed, setBribed] = useState(false);
   const [pending, setPending] = useState<Mission | null>(null);
+
+  // v1.1 Street Cred: concurrent mission slots
+  const slots = me?.cred?.perks.missionSlots ?? 1;
+  const activeJobs = missions?.active.length ?? 0;
+  const slotsFull = activeJobs >= slots;
+  const slotUpsell = me?.cred ? slotUnlockTier(me.cred.tier) : null;
+  const vouchers = pass?.insuranceVouchers ?? 0;
 
   const loc = location;
   const eligible: Character[] = (characters ?? []).filter((c) => c.faction !== "bloodhound" && c.inGame && c.status !== "dead");
@@ -103,11 +125,11 @@ export function MissionSheet({ location, open, onClose }: {
   const start = useGameMutation(
     async (c, args: { locationSlug: string; characterId?: string; stake: string }) => {
       const m = await c.startMission(args);
-      if (insured) await c.buyInsurance(m.id).catch(() => undefined);
+      if (insured) await c.buyInsurance(m.id, { useVoucher: useVoucher && vouchers > 0 }).catch(() => undefined);
       if (bribed) await c.bribe(m.id).catch(() => undefined);
       return m;
     },
-    ["missions", "me", "characters", "locations"],
+    ["missions", "me", "characters", "locations", "pass"],
     {
       onSuccess: (m) => {
         setPending(m);
@@ -119,14 +141,16 @@ export function MissionSheet({ location, open, onClose }: {
   const stakeValid =
     loc !== null && stake >= BigInt(loc.minStake) && stake <= maxStake && stake > 0n;
   const charValid = selected === "free" ? loc?.freeTierAllowed : !!selectedChar && selectedChar.status === "idle";
-  const totalCost = stake + (insured ? insPrice : 0n) + (bribed ? bribePrice : 0n);
-  const canConfirm = stakeValid && !!charValid && totalCost <= balance && !start.isPending;
+  const insCost = insured && !(useVoucher && vouchers > 0) ? insPrice : 0n;
+  const totalCost = stake + insCost + (bribed ? bribePrice : 0n);
+  const canConfirm = stakeValid && !!charValid && totalCost <= balance && !slotsFull && !start.isPending;
 
   const reset = () => {
     setPending(null);
     setSelected(null);
     setStakeWhole("");
     setInsured(false);
+    setUseVoucher(false);
     setBribed(false);
   };
 
@@ -149,6 +173,24 @@ export function MissionSheet({ location, open, onClose }: {
       {loc && pending === null && (
         <div className="space-y-5">
           <p className="text-sm italic text-muted">&ldquo;{loc.tagline}&rdquo;</p>
+
+          {/* v1.1 — Street Cred slot limit */}
+          {slotsFull && (
+            <div className="rounded-xl border border-danger/50 bg-danger/10 px-4 py-3 text-sm" role="alert">
+              <span className="font-bold text-danger">All crews are out.</span>{" "}
+              <span className="text-muted">
+                {activeJobs}/{slots} job{slots > 1 ? "s" : ""} running.
+                {slotUpsell ? (
+                  <>
+                    {" "}Street Cred <Link href="/cred" className="font-bold text-accent underline">{TIER_LABEL[slotUpsell.tier]}</Link>{" "}
+                    unlocks {slotUpsell.slots === 2 ? "a second job" : `${slotUpsell.slots} concurrent jobs`}.
+                  </>
+                ) : (
+                  " Wait for one to land."
+                )}
+              </span>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2 text-xs text-muted">
             <span className="rounded-full bg-surface2 px-2.5 py-1">{formatGameDuration(loc.durationHours)}</span>
             <span className="rounded-full bg-surface2 px-2.5 py-1">{loc.playersActive} crews active</span>
@@ -264,16 +306,34 @@ export function MissionSheet({ location, open, onClose }: {
           {/* insurance + bribe */}
           <div className="space-y-2">
             {loc.rektCapable && (
-              <label className={clsx("flex cursor-pointer items-center justify-between rounded-xl border px-4 py-3", insured ? "border-success/50 bg-success/5" : "border-line bg-surface2")}>
-                <span>
-                  <span className="block text-sm font-semibold">Rekt insurance</span>
-                  <span className="block text-xs text-muted">Character survives a fatal roll. Premium burns.</span>
-                </span>
-                <span className="flex items-center gap-2.5">
-                  <TokenAmount amount={insPrice} className="text-xs" />
-                  <input type="checkbox" checked={insured} onChange={(e) => setInsured(e.target.checked)} className="h-4 w-4 accent-[#3DDC97]" />
-                </span>
-              </label>
+              <div className={clsx("rounded-xl border", insured ? "border-success/50 bg-success/5" : "border-line bg-surface2")}>
+                <label className="flex cursor-pointer items-center justify-between px-4 py-3">
+                  <span>
+                    <span className="block text-sm font-semibold">Rekt insurance</span>
+                    <span className="block text-xs text-muted">Character survives a fatal roll. Premium burns.</span>
+                  </span>
+                  <span className="flex items-center gap-2.5">
+                    {useVoucher && vouchers > 0 ? (
+                      <span className="text-xs font-bold text-success">voucher — free</span>
+                    ) : (
+                      <TokenAmount amount={insPrice} className="text-xs" />
+                    )}
+                    <input type="checkbox" checked={insured} onChange={(e) => setInsured(e.target.checked)} className="h-4 w-4 accent-[#3DDC97]" />
+                  </span>
+                </label>
+                {/* v1.1 — season pass insurance voucher */}
+                {insured && vouchers > 0 && (
+                  <label className="flex cursor-pointer items-center justify-between border-t border-line/60 px-4 py-2.5">
+                    <span className="flex items-center gap-2 text-xs">
+                      <span aria-hidden>🛡️</span>
+                      <span>
+                        Use a pass voucher <span className="text-muted">({vouchers} left · covers it, no burn)</span>
+                      </span>
+                    </span>
+                    <input type="checkbox" checked={useVoucher} onChange={(e) => setUseVoucher(e.target.checked)} className="h-4 w-4 accent-[#3DDC97]" />
+                  </label>
+                )}
+              </div>
             )}
             {loc.heat !== "none" && (
               <label className={clsx("flex cursor-pointer items-center justify-between rounded-xl border px-4 py-3", bribed ? "border-accent/50 bg-accent/5" : "border-line bg-surface2")}>

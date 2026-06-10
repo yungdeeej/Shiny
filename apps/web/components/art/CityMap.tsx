@@ -6,10 +6,11 @@
  * windows, moon + clouds, wet-street reflections and a subtle rain layer.
  */
 import { makeRng } from "@trash-wars/economy";
-import type { HeatBand, LocationLive, Mission } from "@trash-wars/shared";
+import type { HeatBand, JackpotState, LocationLive, Mission } from "@trash-wars/shared";
 import { motion, useReducedMotion } from "framer-motion";
 import React from "react";
 import coords from "./buildings.json";
+import { VaultWidget } from "../game/VaultWidget";
 import { formatCountdown } from "../../lib/time";
 
 const HEAT_COLOR: Record<HeatBand, string> = {
@@ -231,7 +232,7 @@ function FirstNational() {
   );
 }
 
-function MintTower({ reduced }: { reduced: boolean }) {
+function MintTower({ reduced, boarded }: { reduced: boolean; boarded: boolean }) {
   // x 720 y 150 w 150 h 330 — monumental background tower
   return (
     <g>
@@ -241,11 +242,34 @@ function MintTower({ reduced }: { reduced: boolean }) {
       <rect x={748} y={170} width={94} height={44} fill="#222a40" stroke="#0a0d13" strokeWidth={3} />
       <rect x={770} y={142} width={50} height={32} fill="#2a3450" stroke="#0a0d13" strokeWidth={3} />
       {/* crown beacon */}
-      <circle cx={795} cy={134} r={7} fill="#C792EA" className="animate-pulse-soft" />
-      <Windows x={742} y={224} w={106} h={210} cols={4} rows={7} seed="win:mint" lit={0.4} color="#D9B8FF" />
+      <circle cx={795} cy={134} r={7} fill={boarded ? "#5a4a23" : "#C792EA"} className="animate-pulse-soft" />
+      <Windows x={742} y={224} w={106} h={210} cols={4} rows={7} seed="win:mint" lit={boarded ? 0.12 : 0.4} color="#D9B8FF" />
       <text x={795} y={200} textAnchor="middle" fontSize={13} fontWeight={800} fill="#C792EA" fontFamily="monospace" letterSpacing={4}>
         THE MINT
       </text>
+      {/* boarded-up pre-winnable (specs/03) — amber leaks through the cracks */}
+      {boarded && (
+        <g>
+          {[
+            [732, 300, -7], [732, 360, 5], [732, 420, -4],
+          ].map(([x, y, r], i) => (
+            <g key={i} transform={`rotate(${r} ${(x as number) + 63} ${(y as number) + 9})`}>
+              <rect x={x} y={y} width={126} height={18} fill="#3a3220" stroke="#0a0d13" strokeWidth={2} />
+              <circle cx={(x as number) + 12} cy={(y as number) + 9} r={2} fill="#0a0d13" />
+              <circle cx={(x as number) + 114} cy={(y as number) + 9} r={2} fill="#0a0d13" />
+            </g>
+          ))}
+          {/* greed through the cracks */}
+          <rect x={742} y={330} width={106} height={6} fill="#FFB627" opacity={0.5} className="animate-pulse-soft" />
+          <rect x={742} y={392} width={106} height={5} fill="#FFB627" opacity={0.35} className="animate-pulse-soft" style={{ animationDelay: "1.1s" }} />
+          <g transform="rotate(-3 795 252)">
+            <rect x={744} y={240} width={102} height={24} rx={3} fill="#0c1018" stroke="#FFB627" strokeWidth={1.5} />
+            <text x={795} y={256} textAnchor="middle" fontSize={10.5} fontWeight={800} fill="#FFB627" fontFamily="monospace">
+              OPENING SOON
+            </text>
+          </g>
+        </g>
+      )}
       {/* searchlights */}
       {!reduced && (
         <g opacity={0.35}>
@@ -271,13 +295,58 @@ function MintTower({ reduced }: { reduced: boolean }) {
   );
 }
 
-const BUILDING_ART: Record<string, (reduced: boolean) => React.ReactElement> = {
+/**
+ * The Penthouse (Kingpin-only, specs/01) — a discreet glass crown atop the
+ * background tower beside First National, gold "K" beacon. Locked silhouette
+ * for everyone below Kingpin.
+ */
+function Penthouse({ unlocked, onSelect }: { unlocked: boolean; onSelect: (slug: string) => void }) {
+  return (
+    <motion.g
+      onClick={unlocked ? () => onSelect("the-penthouse") : undefined}
+      whileHover={unlocked ? { y: -3, filter: "brightness(1.2)" } : undefined}
+      style={{ cursor: unlocked ? "pointer" : "default" }}
+      role={unlocked ? "button" : undefined}
+      aria-label={unlocked ? "The Penthouse Job — Kingpin access" : "The Penthouse — Kingpin only"}
+      tabIndex={unlocked ? 0 : undefined}
+      onKeyDown={(e) => {
+        if (unlocked && (e.key === "Enter" || e.key === " ")) onSelect("the-penthouse");
+      }}
+      opacity={unlocked ? 1 : 0.8}
+    >
+      {unlocked && <ellipse cx={945} cy={222} rx={70} ry={36} fill="#FFB627" opacity={0.12} />}
+      {/* glass crown atop the 900–990 background tower */}
+      <rect x={903} y={214} width={84} height={38} fill="#141b2c" stroke="#0a0d13" strokeWidth={2.5} />
+      <rect x={909} y={220} width={72} height={20} fill={unlocked ? "#2b2410" : "#10141f"} stroke="#0a0d13" strokeWidth={1.5} />
+      {unlocked && (
+        <g>
+          {[914, 932, 950, 968].map((wx, i) => (
+            <rect key={wx} x={wx} y={223} width={12} height={14} fill="#FFD56B" opacity={0.75} className={i === 2 ? "animate-flicker" : undefined} />
+          ))}
+        </g>
+      )}
+      <rect x={918} y={202} width={54} height={12} fill="#1a2235" stroke="#0a0d13" strokeWidth={2} />
+      {/* gold K beacon */}
+      <circle cx={945} cy={194} r={9} fill="#0c1018" stroke="#FFB627" strokeWidth={1.8} opacity={unlocked ? 1 : 0.55} />
+      <text x={945} y={198.5} textAnchor="middle" fontSize={11} fontWeight={900} fill="#FFB627" fontFamily="monospace" opacity={unlocked ? 1 : 0.6}>
+        K
+      </text>
+      {!unlocked && (
+        <text x={945} y={266} textAnchor="middle" fontSize={9} fontWeight={700} fill="#8A94A6" fontFamily="monospace" letterSpacing={1}>
+          🔒 KINGPIN
+        </text>
+      )}
+    </motion.g>
+  );
+}
+
+const BUILDING_ART: Record<string, (reduced: boolean, opts?: { mintBoarded?: boolean }) => React.ReactElement> = {
   "corner-store": () => <Bodega />,
   "pawn-shop": () => <PawnShop />,
   "jewelry-district": () => <Jewelry />,
   "armored-truck": () => <TruckDepot />,
   "first-national": () => <FirstNational />,
-  "the-mint": (reduced) => <MintTower reduced={reduced} />,
+  "the-mint": (reduced, opts) => <MintTower reduced={reduced} boarded={opts?.mintBoarded ?? false} />,
 };
 
 export interface CityMapProps {
@@ -285,10 +354,14 @@ export interface CityMapProps {
   activeMissions: Mission[];
   now: number;
   onSelect: (slug: string) => void;
+  /** v1.1 — public jackpot pool (drives the VaultWidget + boarded Mint). */
+  jackpot?: JackpotState | null;
 }
 
-export function CityMap({ locations, activeMissions, now, onSelect }: CityMapProps) {
+export function CityMap({ locations, activeMissions, now, onSelect, jackpot }: CityMapProps) {
   const reduced = useReducedMotion() ?? false;
+  const penthouseUnlocked = locations.some((l) => l.slug === "the-penthouse");
+  const mintBoarded = jackpot ? !jackpot.winnable : false;
 
   return (
     <div className="relative w-full overflow-hidden rounded-2xl border border-line bg-[#0a0e16]">
@@ -366,6 +439,9 @@ export function CityMap({ locations, activeMissions, now, onSelect }: CityMapPro
           })}
         </g>
 
+        {/* the penthouse — Kingpin-only, atop the tower beside First National */}
+        <Penthouse unlocked={penthouseUnlocked} onSelect={onSelect} />
+
         {/* buildings */}
         {BOXES.map((b) => {
           const loc = locations.find((l) => l.slug === b.slug);
@@ -409,7 +485,7 @@ export function CityMap({ locations, activeMissions, now, onSelect }: CityMapPro
                   />
                 </>
               )}
-              {art ? art(reduced) : null}
+              {art ? art(reduced, { mintBoarded }) : null}
               {/* name plate */}
               <g transform={`translate(${b.labelX} ${b.labelY})`}>
                 <rect x={-62} y={-14} width={124} height={22} rx={11} fill="#0c1018" stroke="#1F2735" strokeWidth={1.5} />
@@ -438,6 +514,18 @@ export function CityMap({ locations, activeMissions, now, onSelect }: CityMapPro
           );
         })}
       </svg>
+
+      {/* v1.1 — the jackpot counter floats over The Mint */}
+      {jackpot && (
+        <div className="absolute left-[47%] top-[2%] w-[30%] min-w-[210px] max-w-[300px]">
+          <VaultWidget
+            pool={jackpot.pool}
+            winnable={jackpot.winnable}
+            winnableAt={jackpot.winnableAt}
+            now={now}
+          />
+        </div>
+      )}
 
       {/* ambient rain layers (city map only) */}
       <div className="rain-layer animate-rain" aria-hidden />

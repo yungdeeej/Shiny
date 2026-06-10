@@ -42,6 +42,8 @@ function LiveWiring({ children }: { children: React.ReactNode }): React.ReactEle
           void qc.invalidateQueries({ queryKey: ["missions"] });
           void qc.invalidateQueries({ queryKey: ["me"] });
           void qc.invalidateQueries({ queryKey: ["characters"] });
+          void qc.invalidateQueries({ queryKey: ["pass"] });
+          void qc.invalidateQueries({ queryKey: ["jackpot"] });
           void client.getLocations().then((locs) => {
             const loc = locs.find((l) => l.slug === e.mission.locationSlug);
             pushResult({ mission: e.mission, result: e.result, locationName: loc?.name ?? e.mission.locationSlug });
@@ -72,6 +74,10 @@ function LiveWiring({ children }: { children: React.ReactNode }): React.ReactEle
           void qc.invalidateQueries({ queryKey: ["listings"] });
           void qc.invalidateQueries({ queryKey: ["characters"] });
           toast(`Sold ${e.listing.character?.name ?? "a recruit"} — ${formatShiny(e.net, { compact: true })} ✦ net`, "success");
+          break;
+        case "pass_level_up":
+          void qc.invalidateQueries({ queryKey: ["pass"] });
+          toast(`🔥 Heat level ${e.level} — new pass rewards unlocked.`, "success");
           break;
       }
     });

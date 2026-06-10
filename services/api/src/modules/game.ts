@@ -13,24 +13,28 @@ import {
 } from "@trash-wars/economy";
 import {
   POLICY,
+  TIER_ORDER,
   ZERO_STATS,
   applyBps,
+  insuranceRequest,
   missionStartRequest,
   type LocationLive,
   type Mission,
   type MissionVerify,
   type CharacterStats,
 } from "@trash-wars/shared";
-import { characters, missionOutcomes, missions, wallets } from "@trash-wars/db";
+import { characters, missionOutcomes, missions, users } from "@trash-wars/db";
 import { and, desc, eq, inArray, sql } from "../core/orm.js";
 import {
   badRequest,
   conflict,
+  forbidden,
   insufficientFunds,
   notFound,
 } from "../core/errors.js";
-import { getCounter, getFlag, getKv } from "../core/config.js";
+import { getFlag, getKv } from "../core/config.js";
 import { getUserAccount, unlockedBalance } from "../core/accounts.js";
+import { resolveTier } from "../core/tiers.js";
 import { encryptSecret } from "../core/crypto.js";
 import {
   activePatrolsAt,
@@ -105,6 +109,31 @@ export default async function gameModule(app: FastifyInstance): Promise<void> {
       throw badRequest("STAKE_OUT_OF_RANGE", `stake must be in [${cfg.minStake}, ${cfg.maxStake}]`);
     }
 
+    // v1.1 Street Cred gates (specs/01): tier resolves from on-chain holdings.
+    const cred = await resolveTier(ctx, user.id);
+
+    // Tier-gated locations (The Penthouse Job is Kingpin-only).
+    if (cfg.minTier !== undefined) {
+      if (cfg.minTier === "kingpin" && !cred.perks.penthouseAccess) {
+        throw forbidden(`this location requires the ${cfg.minTier} tier`);
+      }
+      if (TIER_ORDER.indexOf(cred.tier) < TIER_ORDER.indexOf(cfg.minTier)) {
+        throw forbidden(`this location requires the ${cfg.minTier} tier`);
+      }
+    }
+
+    // Concurrent mission slots = f(tier), base 1 (NEW in v1.1 — applies to all starts).
+    const activeRows = await ctx.db
+      .select({ n: sql<string>`count(*)::text` })
+      .from(missions)
+      .where(and(eq(missions.userId, user.id), eq(missions.state, "active")));
+    if (Number(activeRows[0]?.n ?? "0") >= cred.perks.missionSlots) {
+      throw conflict(
+        "NO_MISSION_SLOTS",
+        `all ${cred.perks.missionSlots} mission slot(s) busy — higher Street Cred tiers run more`,
+      );
+    }
+
     let stats: CharacterStats = ZERO_STATS;
     let characterId: string | null = null;
     let freeTier = false;
@@ -127,25 +156,20 @@ export default async function gameModule(app: FastifyInstance): Promise<void> {
       stats = char.stats;
       characterId = char.id;
     } else {
-      // Free-tier token mission (doc 06): holding-gated, cooldown, capped stake.
+      // Free-tier token mission (doc 06 → specs/01): the raw 10k holding check
+      // is now the Alley tier's freeTierAccess perk; cooldown + stake cap stay.
       if (!cfg.freeTierAllowed) {
         throw badRequest("CHARACTER_REQUIRED", "this location requires a character");
       }
       freeTier = true;
-      const walletRows = await ctx.db
-        .select()
-        .from(wallets)
-        .where(eq(wallets.userId, user.id));
-      const primary = walletRows.find((w) => w.isPrimary) ?? walletRows[0];
-      if (!primary && !ctx.env.beta) {
-        throw badRequest("NO_WALLET", "link a wallet to run free-tier missions");
-      }
-      const holding = await ctx.chain.getShinyHolding(primary?.address ?? "beta-guest");
-      if (holding < ctx.env.freeTierMinHolding) {
-        throw badRequest("HOLDING_TOO_LOW", "free tier requires holding 10k $SHINY");
+      if (!cred.perks.freeTierAccess) {
+        throw badRequest(
+          "HOLDING_TOO_LOW",
+          "free tier requires the Alley tier — hold 10k $SHINY in your wallet",
+        );
       }
       const maxFreeStake =
-        holding / 10n < POLICY.freeTierMaxStake ? holding / 10n : POLICY.freeTierMaxStake;
+        cred.held / 10n < POLICY.freeTierMaxStake ? cred.held / 10n : POLICY.freeTierMaxStake;
       if (stake > maxFreeStake) {
         throw badRequest("STAKE_TOO_HIGH", `free-tier stake cap is ${maxFreeStake}`);
       }
@@ -343,6 +367,19 @@ export default async function gameModule(app: FastifyInstance): Promise<void> {
     const cutoffMs = ctx.clock.gameMinutesToMs(POLICY.insuranceCutoffMinutes);
     if (Date.now() > mission.resolvesAt.getTime() - cutoffMs) {
       throw conflict("TOO_LATE", "insurance closes 5 minutes before resolution");
+    }
+
+    // v1.1 (specs/02): a Season Pass insurance voucher substitutes the burn.
+    const { useVoucher } = insuranceRequest.parse(request.body ?? {});
+    if (useVoucher === true) {
+      const spent = await ctx.db
+        .update(users)
+        .set({ insuranceVouchers: sql`${users.insuranceVouchers} - 1` })
+        .where(and(eq(users.id, user.id), sql`${users.insuranceVouchers} > 0`))
+        .returning({ left: users.insuranceVouchers });
+      if (!spent[0]) throw conflict("NO_VOUCHERS", "no insurance vouchers held");
+      await ctx.db.update(missions).set({ insurance: true }).where(eq(missions.id, mission.id));
+      return { ok: true, price: "0", voucher: true, vouchersLeft: spent[0].left };
     }
 
     const price = insurancePrice(mission.stake, location.config);

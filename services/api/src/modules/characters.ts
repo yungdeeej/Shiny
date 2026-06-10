@@ -16,6 +16,7 @@ import { characterToApi, type CharacterRow } from "../core/characters.js";
 import { getLocation } from "../core/locations.js";
 import { clampToEmissions, commitEmissions } from "../core/settle.js";
 import { publishFeed } from "../core/feed.js";
+import { resolveTier } from "../core/tiers.js";
 import { requireTos } from "./session.js";
 
 export default async function charactersModule(app: FastifyInstance): Promise<void> {
@@ -99,7 +100,11 @@ export default async function charactersModule(app: FastifyInstance): Promise<vo
     const char = await ownedCharacter(user.id, request.params.id);
     if (char.status !== "jailed") throw conflict("NOT_JAILED", "character is not in jail");
 
-    const price = bailPrice();
+    // v1.1 (specs/01): Block+ get 10% off bail; the burn/PD split ratios are
+    // unchanged — they apply to the discounted price.
+    const cred = await resolveTier(ctx, user.id);
+    const price =
+      (bailPrice() * (10_000n - BigInt(cred.perks.bailDiscountBps))) / 10_000n;
     const balances = await unlockedBalance(ctx.db, ctx.ledger, user.id);
     if (balances.unlocked < price) throw insufficientFunds();
     const { burn, pd } = splitBail(price);
@@ -119,6 +124,12 @@ export default async function charactersModule(app: FastifyInstance): Promise<vo
     await publishFeed(ctx, {
       type: "burn",
       message: `🔓 ${char.name} posted bail and walked out of the tank`,
+    });
+    // v1.1 (specs/02): pass XP event.
+    ctx.bus.emitUser(user.id, {
+      type: "bail_paid",
+      characterId: char.id,
+      price: price.toString(),
     });
     return { ok: true, price: price.toString() };
   });

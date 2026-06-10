@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { tokenAmount } from "./amounts.js";
+import { credTier } from "./cred.js";
 
 /* ── Core enums ───────────────────────────────────────────────────── */
 
@@ -86,6 +87,10 @@ export const locationConfig = z.object({
   capArrestShiftBps: z.number().int().min(0),
   capConfShiftBps: z.number().int().min(0),
   enabled: z.boolean().default(true),
+  /** v1.1 (specs/01): minimum Street Cred tier required to start missions here. */
+  minTier: credTier.optional(),
+  /** v1.1 (specs/03): this location's `jackpot` outcome also wins the progressive pool. */
+  jackpotEligible: z.boolean().optional(),
 });
 export type LocationConfig = z.infer<typeof locationConfig>;
 

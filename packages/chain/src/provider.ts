@@ -41,21 +41,33 @@ export interface ChainProvider {
 }
 
 /**
- * Beta-mode stub: deterministic, instant, no RPC. Holdings are seeded huge so
- * free-tier gates pass during the playtest; "tx signatures" are tagged fakes
- * that the UI renders as BETA badges instead of explorer links.
+ * Beta-mode stub: deterministic, instant, no RPC. The default wallet holding is
+ * configurable (BETA_STUB_HOLDING, base units; default 50k SHINY → beta users
+ * land the Block tier and see the Street Cred system without maxing it), with a
+ * per-address override map as the test hook for tier scenarios. "Tx signatures"
+ * are tagged fakes that the UI renders as BETA badges instead of explorer links.
  */
 export class StubChainProvider implements ChainProvider {
   readonly cluster = "beta-stub" as const;
   private seq = 0;
+  /** Per-address holding overrides — test hook for Street Cred tier scenarios. */
+  private readonly holdingOverrides = new Map<string, bigint>();
+
+  constructor(private readonly defaultHolding: bigint = 50_000_000_000n) {}
 
   private sig(prefix: string): string {
     this.seq += 1;
     return `BETA-${prefix}-${Date.now().toString(36)}-${this.seq}`;
   }
 
-  async getShinyHolding(): Promise<bigint> {
-    return 1_000_000_000_000n; // 1M SHINY — free tier always open in beta
+  /** Test hook: pin a specific address to a holding (null clears the pin). */
+  setHoldingOverride(address: string, holding: bigint | null): void {
+    if (holding === null) this.holdingOverrides.delete(address);
+    else this.holdingOverrides.set(address, holding);
+  }
+
+  async getShinyHolding(address: string): Promise<bigint> {
+    return this.holdingOverrides.get(address) ?? this.defaultHolding;
   }
 
   async payWithdrawal(_dest: string, _amount: bigint): Promise<string> {
@@ -96,12 +108,17 @@ export class StubChainProvider implements ChainProvider {
  */
 export function createChainProvider(env: {
   BETA_MODE?: string;
+  BETA_STUB_HOLDING?: string;
   SOLANA_RPC_URL?: string;
   SHINY_MINT?: string;
   DEPOSIT_ADDRESS?: string;
   MULTISIG_ATA?: string;
 }): ChainProvider {
-  if (env.BETA_MODE === "1" || env.BETA_MODE === "true") return new StubChainProvider();
+  if (env.BETA_MODE === "1" || env.BETA_MODE === "true") {
+    return new StubChainProvider(
+      env.BETA_STUB_HOLDING !== undefined ? BigInt(env.BETA_STUB_HOLDING) : undefined,
+    );
+  }
   if (env.SOLANA_RPC_URL && env.SHINY_MINT) {
     return new DevnetChainProvider({
       rpcUrl: env.SOLANA_RPC_URL,

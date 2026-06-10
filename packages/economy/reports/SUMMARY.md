@@ -1,5 +1,28 @@
 # S1 economy retune v2 — summary (2026-06-10)
 
+> **AMENDED for v1.1 (same day):** loss routing moved to the 3-way split
+> **94.5% burn / 0.5% PD / 5% jackpot_pool** (specs/03 — doc 14's 45/50/5 was
+> written pre-APR-tune; burn gives up the 5 points, the PD sliver is untouched
+> so the hound APR band holds). The sim adds the 2M day-0 jackpot seed, pool
+> wins from day 56 (payout = pool − 10% floor), a `penthouse-job` location
+> (Kingpin-gated, paying EV 1.032, no jackpot row), and the jackpotPool term in
+> the daily conservation identity. Reports regenerated; v1.0→v1.1 deltas
+> (180d, 2000 players, seed 42, d60–89 window):
+>
+> | Scenario | APR staked d60–89 | Net inflation d60–89 | S1 clamp days | Burned by d89 (M SHINY) |
+> |---|---|---|---|---|
+> | growth | 37.99% → **38.6%** | −0.42% → **−0.32%/d** | 0 → **0** | 171.4 → **170.5** (−0.6%) |
+> | plateau | 36.59% → **37.5%** | +0.04% → **+0.03%/d** | 0 → **0** | 126.9 → **126.3** (−0.5%) |
+> | decay | 34.96% → **35.9%** | +0.01% → **+0.05%/d** | 0 → **0** | 129.5 → **128.7** (−0.6%) |
+>
+> All three scenarios stay inside the approved bands (APR 35–45% staked, net
+> inflation ≤ +0.15%/day by d60, zero clamp days) with NO burn/idle correction
+> needed — the 5% slice costs burn ~0.5–0.6% cumulatively and largely returns
+> to players (and thence to sinks) via pool wins. Jackpot behavior at seed 42:
+> growth 102 S1 hits / pool 250 at d89 · plateau 52 / 7.9k · decay 39 / 5.9k —
+> with 100 whales grinding The Mint daily the pool is swept frequently after
+> day 56; the 8-week pre-open accrual (2M+ seed) is the headline number.
+
 Scenario harness: 180 days, 2,000 players, seed 42, mix grinder 35% / extractor 20% /
 whale 5% (10 characters each) / tourist 30% / pd_farmer 10% (the adversarial cap).
 All numbers below are from the committed reports (`growth-2000.md`, `plateau-2000.md`,
@@ -92,13 +115,10 @@ Seed-7 cross-check (growth): APR 33.5–37.6%, inflation ≤ +0.08%, clamp 0/90.
    denominator. Hounds still actively staked earn 35–36% throughout (the sim pays
    distributions only to active patrollers). No routing value inside the approved
    35–45% steady band can hold ≥15% on the living basis (it would need ≥85% steady).
-3. **`services/api` settle.ts is out of sync with the tuned spec** (source untouchable
-   this pass): it hardcodes `PATROL_BOUNTY_BPS = 4_000` instead of reading
-   `POLICY.patrolBountyBps`, and routes confiscations 100% to pd_pool instead of
-   through `splitLoss`. **With live behavior the hound APR would blow past the band
-   (~40x bounty, ~200x pool inflow). Both must be patched before launch** — two
-   small diffs: import the POLICY constant, and apply `splitLoss` to the
-   post-bounty confiscation remainder.
+3. ~~**`services/api` settle.ts is out of sync with the tuned spec**~~ — RESOLVED:
+   settle.ts reads `POLICY.patrolBountyBps` and routes the post-bounty
+   confiscation remainder through `splitLoss` (now 3-way incl. the 5% jackpot
+   slice), verified by the API test suite's routing + conservation tests.
 4. **If DAU halves** with hounds staying staked, hound income roughly halves → APR
    ~18% (still ≥15%). If DAU doubles to 4k with the farmer cap binding at 10%, APR
    roughly doubles (~70%) — the loss-split sliver (0.5%) or bounty (1%) should be

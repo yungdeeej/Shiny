@@ -85,6 +85,49 @@ function MugshotFrame({ character }: { character: Character | null }) {
   );
 }
 
+/** Gold vault door swinging open — the pool-win moment (specs/03). */
+function VaultDoorOpen() {
+  const reduced = useReducedMotion();
+  return (
+    <div className="relative mx-auto h-[150px] w-[150px]" style={{ perspective: 600 }}>
+      {/* vault interior glow */}
+      <div className="absolute inset-2 rounded-full bg-[radial-gradient(circle,rgba(255,213,107,0.55),rgba(255,182,39,0.12)_70%)]" />
+      <svg viewBox="0 0 150 150" className="absolute inset-0" aria-hidden>
+        <circle cx="75" cy="75" r="70" fill="none" stroke="#7a5a16" strokeWidth="8" />
+        <circle cx="75" cy="75" r="62" fill="none" stroke="#FFB627" strokeWidth="2" opacity="0.6" />
+      </svg>
+      <motion.div
+        className="absolute inset-0"
+        style={{ transformOrigin: "left center" }}
+        initial={reduced ? { rotateY: -75 } : { rotateY: 0 }}
+        animate={{ rotateY: -75 }}
+        transition={{ delay: 0.4, duration: 1.1, ease: [0.7, 0, 0.3, 1] }}
+      >
+        <svg viewBox="0 0 150 150" className="h-full w-full" aria-hidden>
+          <circle cx="75" cy="75" r="64" fill="#2b2410" stroke="#FFB627" strokeWidth="4" />
+          <circle cx="75" cy="75" r="40" fill="none" stroke="#FFD56B" strokeWidth="3" opacity="0.9" />
+          <g stroke="#FFD56B" strokeWidth="5" strokeLinecap="round">
+            <line x1="75" y1="44" x2="75" y2="106" />
+            <line x1="44" y1="75" x2="106" y2="75" />
+            <line x1="53" y1="53" x2="97" y2="97" />
+            <line x1="97" y1="53" x2="53" y2="97" />
+          </g>
+          <circle cx="75" cy="75" r="9" fill="#FFB627" />
+          {[30, 90, 150, 210, 270, 330].map((deg) => (
+            <circle
+              key={deg}
+              cx={75 + 54 * Math.cos((deg * Math.PI) / 180)}
+              cy={75 + 54 * Math.sin((deg * Math.PI) / 180)}
+              r="3"
+              fill="#FFB627"
+            />
+          ))}
+        </svg>
+      </motion.div>
+    </div>
+  );
+}
+
 function EvidenceBag({ amount }: { amount: string }) {
   return (
     <div className="relative mx-auto w-fit">
@@ -124,11 +167,18 @@ export function ResultTakeover({ mission, result, locationName, character, handl
   const stake = BigInt(mission.stake);
   const payout = BigInt(result.payout);
   const profit = payout - stake;
+  /** v1.1 — set when the same roll ALSO won the progressive pool. */
+  const poolWon =
+    typeof result.detail?.jackpotPool === "string" && /^\d+$/.test(result.detail.jackpotPool)
+      ? BigInt(result.detail.jackpotPool)
+      : null;
 
   const shareText = (() => {
     switch (result.outcome) {
       case "jackpot":
-        return `I just hit the ${mult?.toFixed(0)}× JACKPOT at ${locationName} in Trash Wars 💎🦝 $SHINY`;
+        return poolWon !== null
+          ? `THE VAULT IS MINE — I cracked The Mint's progressive jackpot for ${formatShiny(poolWon, { compact: true })} $SHINY in Trash Wars 🏦💎🦝`
+          : `I just hit the ${mult?.toFixed(0)}× JACKPOT at ${locationName} in Trash Wars 💎🦝 $SHINY`;
       case "win":
         return `Hit ${mult?.toFixed(1)}× at ${locationName} in Trash Wars 🦝 +${formatShiny(profit, { compact: true })} $SHINY`;
       case "arrest":
@@ -173,6 +223,27 @@ export function ResultTakeover({ mission, result, locationName, character, handl
       );
       break;
     case "jackpot":
+      if (poolWon !== null) {
+        // v1.1 `vault` variant — the progressive pool payout dominates
+        wash = "bg-[radial-gradient(circle_at_50%_38%,rgba(255,182,39,0.45),rgba(255,213,107,0.1),transparent_72%)]";
+        body = (
+          <>
+            <ConfettiShiny />
+            <VaultDoorOpen />
+            <h2 className="mt-4 font-display text-5xl text-accent drop-shadow-[0_0_28px_rgba(255,182,39,0.8)]">
+              THE VAULT IS YOURS
+            </h2>
+            <p className="mt-1 text-sm uppercase tracking-[0.3em] text-accent2/80">The Mint&apos;s pool, emptied to the floor</p>
+            <p className="mt-5 inline-flex items-center gap-2 font-display text-7xl text-accent2">
+              <ShinyGlyph size={48} /> <CountUp to={poolWon} duration={2.6} />
+            </p>
+            <p className="mt-3 text-sm text-muted">
+              plus the {mult?.toFixed(0)}× roll — <span className="font-bold text-jackpot">{formatShiny(payout, { compact: true })} ✦</span> on your stake
+            </p>
+          </>
+        );
+        break;
+      }
       wash = "bg-[radial-gradient(circle_at_50%_40%,rgba(199,146,234,0.4),rgba(255,182,39,0.12),transparent_70%)]";
       body = (
         <>

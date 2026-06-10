@@ -5,7 +5,7 @@
  */
 import { rollFromSeeds } from "@trash-wars/economy";
 import { raffles, raffleTickets, userCosmetics } from "@trash-wars/db";
-import { and, eq, lte, inArray } from "./orm.js";
+import { and, eq, lte, sql } from "./orm.js";
 import type { AppContext } from "./context.js";
 import { decryptSecret } from "./crypto.js";
 import { createCharacter } from "./characters.js";
@@ -47,6 +47,33 @@ export function computeRaffleWinners(
     }
   }
   return winners;
+}
+
+/** Add `n` tickets for a user (insert-or-increment). Returns the new total. */
+export async function addRaffleTickets(
+  ctx: AppContext,
+  raffleId: string,
+  userId: string,
+  n: number,
+): Promise<number> {
+  const existing = await ctx.db
+    .select()
+    .from(raffleTickets)
+    .where(and(eq(raffleTickets.raffleId, raffleId), eq(raffleTickets.userId, userId)))
+    .limit(1);
+  if (existing[0]) {
+    const updated = await ctx.db
+      .update(raffleTickets)
+      .set({ count: sql`${raffleTickets.count} + ${n}` })
+      .where(eq(raffleTickets.id, existing[0].id))
+      .returning({ count: raffleTickets.count });
+    return updated[0]!.count;
+  }
+  const inserted = await ctx.db
+    .insert(raffleTickets)
+    .values({ raffleId, userId, count: n })
+    .returning({ count: raffleTickets.count });
+  return inserted[0]!.count;
 }
 
 export async function drawRaffle(ctx: AppContext, raffleId: string): Promise<boolean> {

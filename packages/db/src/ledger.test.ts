@@ -29,6 +29,42 @@ describe("migrateDb", () => {
     const again = await ledger.ensureSystemAccounts();
     expect(again).toEqual(sys);
   });
+
+  it("v1.1: jackpot_pool is a system account and posts ledger legs", async () => {
+    expect(sys.jackpot_pool).toBeTruthy();
+    const posted = await ledger.postTransaction(
+      [
+        { accountId: sys.jackpot_pool, delta: 555n },
+        { accountId: sys.onchain_reserve_mirror, delta: -555n },
+      ],
+      { idempotencyKey: `jackpot-test:${randomUUID()}` },
+    );
+    expect(posted.applied).toBe(true);
+    await expect(ledger.getBalance(sys.jackpot_pool)).resolves.toBe(555n);
+  });
+
+  it("v1.1: enum extension upgrades a pre-v1.1 database (ALTER TYPE ADD VALUE IF NOT EXISTS)", async () => {
+    const { createDb, closeDb, migrateDb: migrate } = await import("./client.js");
+    const { sql } = await import("drizzle-orm");
+    const old = createDb(); // fresh in-memory PGlite
+    try {
+      // Simulate a database created BEFORE v1.1: account_kind without jackpot_pool.
+      await old.execute(
+        sql.raw(
+          `CREATE TYPE "account_kind" AS ENUM ('game_balance','treasury','burn_pool','pd_pool',` +
+            `'emissions_budget','emissions_reserve','mission_escrow','withdrawals_payable',` +
+            `'onchain_reserve_mirror','burned')`,
+        ),
+      );
+      await migrate(old); // CREATE TYPE swallowed; ALTER adds jackpot_pool
+      await migrate(old); // and stays idempotent on re-run
+      const oldLedger = new LedgerService(old);
+      const accounts = await oldLedger.ensureSystemAccounts();
+      expect(accounts.jackpot_pool).toBeTruthy();
+    } finally {
+      await closeDb(old);
+    }
+  });
 });
 
 describe("postTransaction validation", () => {

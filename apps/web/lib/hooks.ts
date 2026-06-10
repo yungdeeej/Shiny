@@ -42,6 +42,23 @@ export function useCharacters() {
   return useGameQuery(["characters"], (c) => c.getCharacters(), { refetchInterval: 4_000 });
 }
 
+/** v1.1 — season pass state (Heat level, rewards, challenges, vouchers). */
+export function usePass() {
+  return useGameQuery(["pass"], (c) => c.getPass(), { refetchInterval: 5_000 });
+}
+
+/** v1.1 — public jackpot pool; live ticks piped into the query cache. */
+export function useJackpot() {
+  const client = useGameClientSafe();
+  const qc = useQueryClient();
+  const q = useGameQuery(["jackpot"], (c) => c.getJackpot(), { refetchInterval: 10_000 });
+  useEffect(() => {
+    if (!client) return;
+    return client.onJackpotTick((s) => qc.setQueryData(["jackpot"], s));
+  }, [client, qc]);
+  return q;
+}
+
 /** Generic mutation with toast-on-error + invalidations. */
 export function useGameMutation<TArgs, TOut>(
   fn: (c: GameClient, args: TArgs) => Promise<TOut>,

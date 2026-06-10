@@ -20,6 +20,7 @@ import { and, eq } from "../core/orm.js";
 import { AppError, badRequest, conflict, unauthorized } from "../core/errors.js";
 import { getCounter, addToCounter, getKv, setKv } from "../core/config.js";
 import { unlockedBalance } from "../core/accounts.js";
+import { credInfoFor } from "../core/tiers.js";
 import { utcDayKey } from "../core/time.js";
 import { createSession, requireAuth, setSessionCookie } from "./session.js";
 
@@ -186,11 +187,13 @@ export default async function authModule(app: FastifyInstance): Promise<void> {
       .values({ userId: user.id, day: utcDayKey() })
       .onConflictDoNothing();
 
-    const [walletRows, balances, flags, userRow] = await Promise.all([
+    const [walletRows, balances, flags, userRow, cred] = await Promise.all([
       ctx.db.select().from(wallets).where(eq(wallets.userId, user.id)),
       unlockedBalance(ctx.db, ctx.ledger, user.id),
       ctx.db.select().from(sybilFlags).where(eq(sybilFlags.userId, user.id)),
       ctx.db.select().from(users).where(eq(users.id, user.id)).limit(1),
+      // v1.1 (specs/01): tier refresh on /me (5-min cached holding read).
+      credInfoFor(ctx, user.id),
     ]);
     const u = userRow[0]!;
 
@@ -212,6 +215,7 @@ export default async function authModule(app: FastifyInstance): Promise<void> {
       ],
       role: u.role,
       createdAt: u.createdAt.toISOString(),
+      cred,
     };
     return response;
   });

@@ -15,9 +15,48 @@ interface WsLike {
 }
 
 const OPEN = 1;
+/** jackpot_tick broadcasts at most once per 10s (specs/03). */
+const JACKPOT_TICK_THROTTLE_MS = 10_000;
 
 export default async function wsModule(app: FastifyInstance): Promise<void> {
   const ctx = app.ctx;
+
+  // v1.1 (specs/03): broadcast {type:"jackpot_tick", pool} to every socket when
+  // the pool changes, throttled globally to >=10s with a trailing send.
+  const sockets = new Set<WsLike>();
+  let lastTickAt = 0;
+  let pendingTick: NodeJS.Timeout | null = null;
+  const broadcastJackpot = async () => {
+    lastTickAt = Date.now();
+    const pool = await ctx.ledger.getBalance(ctx.accounts.jackpot_pool);
+    const payload = JSON.stringify({ type: "jackpot_tick", pool: pool.toString() });
+    for (const ws of sockets) {
+      if (ws.readyState === OPEN) {
+        try {
+          ws.send(payload);
+        } catch {
+          /* socket raced shut */
+        }
+      }
+    }
+  };
+  const unsubscribeJackpot = ctx.bus.onJackpot(() => {
+    if (pendingTick) return; // a trailing tick is already scheduled
+    const elapsed = Date.now() - lastTickAt;
+    if (elapsed >= JACKPOT_TICK_THROTTLE_MS) {
+      void broadcastJackpot().catch((err) => ctx.log.error({ err }, "jackpot tick failed"));
+    } else {
+      pendingTick = setTimeout(() => {
+        pendingTick = null;
+        void broadcastJackpot().catch((err) => ctx.log.error({ err }, "jackpot tick failed"));
+      }, JACKPOT_TICK_THROTTLE_MS - elapsed);
+      pendingTick.unref?.();
+    }
+  });
+  app.addHook("onClose", async () => {
+    unsubscribeJackpot();
+    if (pendingTick) clearTimeout(pendingTick);
+  });
 
   app.get("/ws", { websocket: true }, (socket, request) => {
     const ws = socket as unknown as WsLike;
@@ -47,6 +86,7 @@ export default async function wsModule(app: FastifyInstance): Promise<void> {
       }
     });
 
+    sockets.add(ws);
     const unsubscribers: (() => void)[] = [];
     unsubscribers.push(ctx.bus.onFeed((event) => send({ type: "feed", event })));
     const userId = request.user?.id;
@@ -66,6 +106,7 @@ export default async function wsModule(app: FastifyInstance): Promise<void> {
     heartbeat.unref?.();
 
     const cleanup = () => {
+      sockets.delete(ws);
       clearInterval(heartbeat);
       for (const unsub of unsubscribers) unsub();
     };

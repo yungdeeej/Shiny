@@ -30,3 +30,8 @@ jobs:
         run: pnpm --filter @trash-wars/web build
         env:
           NEXT_PUBLIC_DEMO_MODE: "1"
+
+      # Economy-sim regression gate (doc 13 §5.1): any change to the economy,
+      # mission logic, or sink prices must keep the three S1 scenarios in band.
+      - name: Economy sim regression gate
+        run: node ops/check-sim-bands.mjs

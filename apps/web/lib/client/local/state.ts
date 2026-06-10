@@ -1,4 +1,5 @@
-import type { Character, Listing, Mission, MissionResult, Raffle, Withdrawal } from "@trash-wars/shared";
+import { JACKPOT, type Character, type CredTier, type Listing, type Mission, type MissionResult, type Raffle, type Withdrawal } from "@trash-wars/shared";
+import { DEMO_V11 } from "./content";
 import type { BankHistoryRow } from "../types";
 
 /**
@@ -39,6 +40,37 @@ export interface PlayerStats {
   freeTicketsClaimed: number;
 }
 
+/** v1.1 — progressive jackpot pool (specs/03), demo-compressed. */
+export interface JackpotSave {
+  pool: string;
+  /** Set at first login (+15 real min); null while logged out. */
+  winnableAt: string | null;
+  hits: number;
+  lastWinner: { handle: string; amount: string; at: string } | null;
+  /** last processed bot-loss accrual bucket */
+  lastBotBucket: number;
+  history: Array<{ kind: "seed" | "win"; handle: string | null; amount: string; poolAfter: string; at: string }>;
+}
+
+/** v1.1 — season pass progress (specs/02). */
+export interface PassSave {
+  premium: boolean;
+  xp: number;
+  /** claimed reward ids */
+  claimed: string[];
+  vouchers: number;
+  /** demo game-day index used for daily XP caps */
+  xpDayIndex: number;
+  raffleXpToday: number;
+  /** last game-day that received the daily-first-mission bonus */
+  firstMissionDayIndex: number | null;
+  challengeProgress: Record<string, number>;
+  /** challenge ids whose 150 XP has been granted */
+  challengeAwarded: string[];
+  /** Borough+ weekly raffle ticket grant — last granted week index */
+  lastRaffleGrantWeek: number;
+}
+
 export interface SaveState {
   v: 1;
   user: {
@@ -66,6 +98,15 @@ export interface SaveState {
   pdFromPlayer: string;
   firstLoginAt: string | null;
   lastSeenBucket: number;
+  /* ── v1.1 ── */
+  /** Simulated on-chain wallet holding (Street Cred beta stand-in). */
+  simulatedHolding: string;
+  /** Effective tier (downgrades lag behind holding via the grace window). */
+  credTier: CredTier;
+  /** While set, a downgrade is pending — applies when this passes. */
+  credGraceUntil: string | null;
+  jackpot: JackpotSave;
+  pass: PassSave;
 }
 
 export const SAVE_KEY = "trash-wars-save-v1";
@@ -101,6 +142,29 @@ export function defaultSave(): SaveState {
     pdFromPlayer: "0",
     firstLoginAt: null,
     lastSeenBucket: 0,
+    simulatedHolding: DEMO_V11.defaultHolding.toString(),
+    credTier: "alley",
+    credGraceUntil: null,
+    jackpot: {
+      pool: JACKPOT.seedAmount.toString(),
+      winnableAt: null,
+      hits: 0,
+      lastWinner: null,
+      lastBotBucket: 0,
+      history: [],
+    },
+    pass: {
+      premium: false,
+      xp: 0,
+      claimed: [],
+      vouchers: 0,
+      xpDayIndex: 0,
+      raffleXpToday: 0,
+      firstMissionDayIndex: null,
+      challengeProgress: {},
+      challengeAwarded: [],
+      lastRaffleGrantWeek: -1,
+    },
   };
 }
 
@@ -111,7 +175,15 @@ export function loadSave(): SaveState {
     if (!raw) return defaultSave();
     const parsed = JSON.parse(raw) as SaveState;
     if (parsed.v !== 1) return defaultSave();
-    return { ...defaultSave(), ...parsed, stats: { ...defaultSave().stats, ...parsed.stats } };
+    const base = defaultSave();
+    return {
+      ...base,
+      ...parsed,
+      stats: { ...base.stats, ...parsed.stats },
+      // v1.1 nested state: merge so pre-v1.1 saves pick up the defaults
+      jackpot: { ...base.jackpot, ...(parsed.jackpot ?? {}) },
+      pass: { ...base.pass, ...(parsed.pass ?? {}) },
+    };
   } catch {
     return defaultSave();
   }

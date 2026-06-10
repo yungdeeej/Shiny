@@ -26,6 +26,7 @@ const CSV_COLUMNS = [
   "withdrawn",
   "burned",
   "pdPool",
+  "jackpotPool",
   "treasury",
   "emissionsSpent",
   "emissionsRemaining",
@@ -40,6 +41,9 @@ const CSV_COLUMNS = [
   "dailyEmissionDemand",
   "dailyLossVolume",
   "dailyStakeVolume",
+  "dailyJackpotIn",
+  "dailyJackpotPaid",
+  "jackpotHits",
   "livingHounds",
   "stakedHounds",
   "budgetShortfall",
@@ -137,12 +141,32 @@ export function renderMarkdown(result: SimResult): string {
     lines.push(`- Withdrawn off-game (net of tax): **${shiny(last.withdrawn)} SHINY**`);
     lines.push(`- Deposited (buy pressure): **${shiny(last.deposited)} SHINY**`);
     lines.push(`- PD pool balance: **${shiny(last.pdPool)} SHINY**`);
+    {
+      const hits = rows.reduce((s, r) => s + r.jackpotHits, 0);
+      const paid = rows.reduce((s, r) => s + r.dailyJackpotPaid, 0n);
+      lines.push(
+        `- Jackpot pool (specs/03): **${shiny(last.jackpotPool)} SHINY** end of run · ` +
+          `${hits} pool hit(s) · ${shiny(paid)} SHINY paid out`,
+      );
+    }
     lines.push(`- Final-day net inflation: ${pct(last.netInflationBps)} of circulating`);
     lines.push(`- Final-day redistribution share of player earnings: ${pct(last.redistributionShareBps)}`);
     lines.push(
       `- Final-day PD APR: ${pct(last.pdAprBps)} on ${last.livingHounds} living hounds ` +
         `(${pct(last.pdAprStakedBps)} on ${last.stakedHounds} staked)`,
     );
+    lines.push("");
+  }
+
+  if (result.tierDistribution && Object.keys(result.tierDistribution).length > 0) {
+    lines.push("## Street Cred tier distribution (static, from archetype mix — specs/01)");
+    lines.push("");
+    lines.push("| Tier | Players |");
+    lines.push("|---|---|");
+    for (const tier of ["none", "alley", "block", "district", "borough", "kingpin"]) {
+      const n = result.tierDistribution[tier];
+      if (n !== undefined) lines.push(`| ${tier} | ${n} |`);
+    }
     lines.push("");
   }
 

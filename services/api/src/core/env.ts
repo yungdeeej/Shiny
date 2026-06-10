@@ -19,6 +19,9 @@ const rawEnv = z.object({
   BETA_MODE: z.string().default("1"),
   BETA_TIME_SCALE: z.coerce.number().positive().optional(),
   BETA_FAUCET_AMOUNT: bigintString.default("100000000000"), // 100k SHINY
+  // v1.1: stub wallet holding (base units). 50k SHINY → beta users land Block —
+  // the tier system shows without maxing out (free-tier maxStake unaffected).
+  BETA_STUB_HOLDING: bigintString.default("50000000000"),
 
   SERVER_SEED_ENCRYPTION_KEY: z.string().default("trash-wars-dev-seed-key"),
   FREE_TIER_MIN_HOLDING: bigintString.default("10000000000"), // 10k SHINY
@@ -53,6 +56,7 @@ export interface Env {
   /** 1 real second = `timeScale` game seconds. Default 60 in beta, 1 otherwise. */
   timeScale: number;
   betaFaucetAmount: bigint;
+  betaStubHolding: bigint;
   serverSeedEncryptionKey: string;
   freeTierMinHolding: bigint;
   withdrawalFeeBps: number;
@@ -83,6 +87,7 @@ export function loadEnv(overrides: Record<string, string | undefined> = {}): Env
     beta,
     timeScale: parsed.BETA_TIME_SCALE ?? (beta ? 60 : 1),
     betaFaucetAmount: BigInt(parsed.BETA_FAUCET_AMOUNT),
+    betaStubHolding: BigInt(parsed.BETA_STUB_HOLDING),
     serverSeedEncryptionKey: parsed.SERVER_SEED_ENCRYPTION_KEY,
     freeTierMinHolding: BigInt(parsed.FREE_TIER_MIN_HOLDING),
     withdrawalFeeBps: parsed.WITHDRAWAL_FEE_BPS,

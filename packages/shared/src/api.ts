@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { tokenAmount } from "./amounts.js";
 import { character, faction, heatBand } from "./game.js";
+import { credInfo } from "./cred.js";
 
 /* ── Auth ─────────────────────────────────────────────────────────── */
 
@@ -38,6 +39,8 @@ export const meResponse = z.object({
   flags: z.array(z.string()),
   role: z.enum(["player", "admin"]),
   createdAt: z.string(),
+  /** v1.1: Street Cred holder tier (specs/01). Optional during reconciliation. */
+  cred: credInfo.optional(),
 });
 export type MeResponse = z.infer<typeof meResponse>;
 
@@ -170,6 +173,10 @@ export const publicStats = z.object({
   missionsToday: z.number().int(),
   biggestHeistThisWeek: tokenAmount,
   treasuryRake: tokenAmount,
+  /** v1.1 telemetry additions (optional during reconciliation). */
+  jackpotPool: tokenAmount.optional(),
+  tierDistribution: z.record(z.number().int()).optional(),
+  passPremiumCount: z.number().int().optional(),
 });
 export type PublicStats = z.infer<typeof publicStats>;
 

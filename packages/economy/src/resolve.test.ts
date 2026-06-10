@@ -168,6 +168,7 @@ describe("money math", () => {
       "armored-truck": 10_290, // 0.42 * 2.45 (S1 v2)
       "first-national": 10_500, // 0.25 * 4.2 (S1 v2, was 5.0x)
       "the-mint": 9_900, // 0.15 * 4.6 + 0.03 * 10 (S1 v2, jackpot was 12x)
+      "penthouse-job": 10_320, // 0.48 * 2.15 (v1.1, Kingpin-gated)
     };
     for (const location of SEASON1_LOCATIONS) {
       const ev = computeEvBps(location.table);
@@ -203,9 +204,24 @@ describe("money math", () => {
     expect(insurancePrice(toBaseUnits(10_000), jewelry)).toBe(toBaseUnits(1_600));
     const odd = 1_000_001n; // indivisible amount
     const loss = splitLoss(odd);
-    expect(loss.burn + loss.pd).toBe(odd);
+    expect(loss.burn + loss.pd + loss.jackpot).toBe(odd);
     const bail = splitBail(odd);
     expect(bail.burn + bail.pd).toBe(odd);
+  });
+
+  it("splitLoss routes 94.5/0.5/5 exactly; indivisible remainders go to burn (v1.1)", () => {
+    const round = toBaseUnits(10_000);
+    const r = splitLoss(round);
+    expect(r.pd).toBe(toBaseUnits(50)); // 0.5%
+    expect(r.jackpot).toBe(toBaseUnits(500)); // 5%
+    expect(r.burn).toBe(toBaseUnits(9_450)); // 94.5%
+    for (const odd of [1n, 7n, 199n, 1_000_001n, 9_999_999_999_999n]) {
+      const s = splitLoss(odd);
+      expect(s.pd).toBe((odd * 50n) / 10_000n);
+      expect(s.jackpot).toBe((odd * 500n) / 10_000n);
+      expect(s.burn).toBe(odd - s.pd - s.jackpot);
+      expect(s.burn + s.pd + s.jackpot).toBe(odd);
+    }
   });
 
   it("heatBandForWeight follows HEAT_THRESHOLDS", () => {

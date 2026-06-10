@@ -14,9 +14,10 @@ import {
   splitLoss,
   SEASON1,
 } from "@trash-wars/economy";
-import { applyBps, POLICY, type MissionOutcome } from "@trash-wars/shared";
+import { JACKPOT, applyBps, POLICY, type MissionOutcome } from "@trash-wars/shared";
 import {
   characters,
+  jackpotEvents,
   missionOutcomes,
   missions,
   incidents,
@@ -29,7 +30,7 @@ import { and, eq, lte, inArray } from "./orm.js";
 import type { AppContext } from "./context.js";
 import { decryptSecret } from "./crypto.js";
 import { getUserAccount } from "./accounts.js";
-import { getCounter, addToCounter } from "./config.js";
+import { getCounter, addToCounter, getKv } from "./config.js";
 import { utcDayKey } from "./time.js";
 import { getLocation, activePatrolsAt } from "./locations.js";
 import { amountBand, publishFeed } from "./feed.js";
@@ -136,6 +137,9 @@ export async function settleMission(
   let payout = 0n;
   let emissionsGranted = 0n;
   let emissionsClamped = false;
+  let jackpotPoolWon = 0n;
+  let jackpotPoolAfter = 0n;
+  let jackpotPoolTouched = false;
   const bountyAudits: { houndOwnerId: string; share: string }[] = [];
 
   switch (outcome) {
@@ -149,6 +153,31 @@ export async function settleMission(
       add(sys.mission_escrow, -stake);
       add(sys.emissions_budget, -emissionsGranted);
       add(userAccount, payout);
+
+      // v1.1 (specs/03): the jackpot outcome at a jackpotEligible location ALSO
+      // wins the progressive pool once jackpot_winnable_at has passed. Pool
+      // payout = balance − 10% reset floor; the ledger amount comes from a
+      // getBalance read immediately before postTransaction. Concurrent settles
+      // cannot double-pay: the `mission:{id}` idempotency key applies the txn
+      // exactly once (only the displayed amount can be benignly racy).
+      if (outcome === "jackpot" && location.config.jackpotEligible === true) {
+        const winnableAtIso = await getKv<string>(ctx.db, "jackpot_winnable_at");
+        const winnable = winnableAtIso !== undefined && now.getTime() >= Date.parse(winnableAtIso);
+        if (winnable) {
+          const pool = await ctx.ledger.getBalance(sys.jackpot_pool);
+          const floorHold = applyBps(pool, JACKPOT.resetFloorBps);
+          const poolPayout = pool - floorHold;
+          if (poolPayout > 0n) {
+            add(sys.jackpot_pool, -poolPayout);
+            add(userAccount, poolPayout);
+            payout += poolPayout;
+            jackpotPoolWon = poolPayout;
+            jackpotPoolAfter = pool - poolPayout;
+            jackpotPoolTouched = true;
+            detail.jackpotPoolWon = poolPayout.toString();
+          }
+        }
+      }
       break;
     }
     case "nothing":
@@ -211,22 +240,26 @@ export async function settleMission(
         detail.patrolBounty = { paid: paidToHounds.toString(), hounds: shift.length };
       }
       {
-        // S1 v2: confiscations are loss flows like rekts — the remainder after
-        // patrol bounties routes through splitLoss (burn-heavy, PD sliver), or
-        // the tuned 35-45% hound APR band blows out ~100x.
-        const { burn, pd } = splitLoss(stake - paidToHounds);
+        // S1 v2 + v1.1: confiscations are loss flows like rekts — the remainder
+        // after patrol bounties routes through the 3-way splitLoss
+        // (94.5% burn / 0.5% PD sliver / 5% jackpot pool, specs/03).
+        const { burn, pd, jackpot } = splitLoss(stake - paidToHounds);
         add(sys.burn_pool, burn);
         add(sys.pd_pool, pd);
+        add(sys.jackpot_pool, jackpot);
+        if (jackpot > 0n) jackpotPoolTouched = true;
       }
       break;
     }
     case "rekt_items":
     case "rekt_character": {
       payout = 0n;
-      const { burn, pd } = splitLoss(stake);
+      const { burn, pd, jackpot } = splitLoss(stake);
       add(sys.mission_escrow, -stake);
       add(sys.burn_pool, burn);
       add(sys.pd_pool, pd);
+      add(sys.jackpot_pool, jackpot);
+      if (jackpot > 0n) jackpotPoolTouched = true;
       if (outcome === "rekt_items") detail.itemsKept = true; // cosmetics survive in s1
       break;
     }
@@ -274,6 +307,9 @@ export async function settleMission(
       bountyAudits,
       stake,
       now,
+      jackpotPoolWon,
+      jackpotPoolAfter,
+      jackpotPoolTouched,
     });
   }
 
@@ -299,6 +335,11 @@ interface SideEffectArgs {
   bountyAudits: { houndOwnerId: string; share: string }[];
   stake: bigint;
   now: Date;
+  /** v1.1: progressive-pool payout included in `payout` (0n when not won). */
+  jackpotPoolWon: bigint;
+  jackpotPoolAfter: bigint;
+  /** v1.1: any jackpot_pool leg applied (loss slice or pool win). */
+  jackpotPoolTouched: boolean;
 }
 
 async function applySideEffects(ctx: AppContext, args: SideEffectArgs): Promise<void> {
@@ -369,6 +410,35 @@ async function applySideEffects(ctx: AppContext, args: SideEffectArgs): Promise<
   const loc = args.locationName;
   const mult = (args.row.multiplierBps ?? 10_000) / 10_000;
 
+  // v1.1 (specs/03): the vault falls — pool-win event row + dedicated feed moment.
+  if (args.jackpotPoolWon > 0n) {
+    await ctx.db.insert(jackpotEvents).values({
+      kind: "win",
+      missionId: mission.id,
+      userId: mission.userId,
+      amount: args.jackpotPoolWon,
+      poolAfter: args.jackpotPoolAfter,
+    });
+    try {
+      await publishFeed(ctx, {
+        type: "jackpot",
+        locationSlug: mission.locationSlug,
+        actor: handle,
+        amountBand: amountBand(args.jackpotPoolWon),
+        message: `🏦 THE VAULT FALLS — ${handle} cleans out ${amountBand(args.jackpotPoolWon)}`,
+      });
+    } catch (err) {
+      ctx.log.error({ err, missionId: mission.id }, "jackpot feed publish failed");
+    }
+    ctx.bus.emitUser(mission.userId, {
+      type: "jackpot_won",
+      missionId: mission.id,
+      amount: args.jackpotPoolWon.toString(),
+      poolAfter: args.jackpotPoolAfter.toString(),
+    });
+  }
+  if (args.jackpotPoolTouched) ctx.bus.emitJackpot();
+
   try {
     switch (outcome) {
       case "win":
@@ -428,11 +498,15 @@ async function applySideEffects(ctx: AppContext, args: SideEffectArgs): Promise<
     ctx.log.error({ err, missionId: mission.id }, "feed publish failed");
   }
 
+  // Emitted ONLY when the ledger txn applied (posted.applied) — settlement
+  // replays therefore never double-grant Season Pass XP (specs/02).
   ctx.bus.emitUser(mission.userId, {
     type: "mission_resolved",
     missionId: mission.id,
     outcome,
     payout: args.payout.toString(),
+    locationSlug: mission.locationSlug,
+    at: now.getTime(),
   });
 }
 

@@ -1,5 +1,11 @@
 # 08 — PVP LAYER: BLOODHOUND PATROLS & CONFISCATION
 
+> **AMENDED (v1.1):** loss routing now includes a 5% progressive-jackpot slice and holder-tier
+> (Street Cred) gates touch this doc's mechanics. Deltas + reconciliation: see
+> `14-launch-scope-amendments.md`; reconciled splits are recorded in `/DECISIONS.md`
+> (94.5/0.5/5 — doc 14's 45/50/5 predates the owner-approved S1 v2 APR tune).
+
+
 ## Objective
 The cop faction's economy. Bloodhounds earn from **redistribution** (confiscated Raccoon losses),
 not emissions — the structural fix that lets the game outlive its emissions schedule. Plus active

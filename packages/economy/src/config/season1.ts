@@ -160,6 +160,36 @@ const RAW_LOCATIONS = [
     capArrestShiftBps: 900,
     capConfShiftBps: 800,
     enabled: true,
+    // v1.1 (specs/03): only The Mint's jackpot outcome wins the progressive pool.
+    jackpotEligible: true,
+  },
+  {
+    // v1.1 (specs/01): Kingpin-gated. Best paying-row EV on the board (1.032 vs
+    // 0.98–1.05 elsewhere) with NO jackpot row and no rekt_character — the perk
+    // is a smoother grind curve, not a budget hazard. Invariant-checked below.
+    slug: "penthouse-job",
+    name: "The Penthouse Job",
+    tagline: "Top floor, velvet rope, private vault. Kingpins only.",
+    durationHours: 10,
+    minStake: units(800),
+    maxStake: units(1_500),
+    table: [
+      { outcome: "win", probabilityBps: 4_800, multiplierBps: 21_500 },
+      { outcome: "nothing", probabilityBps: 1_600 },
+      { outcome: "arrest", probabilityBps: 1_900 },
+      { outcome: "confiscation", probabilityBps: 1_400 },
+      { outcome: "rekt_items", probabilityBps: 300 },
+    ],
+    requiresCharacter: true,
+    freeTierAllowed: false,
+    rektCapable: true,
+    insuranceBps: 2_000,
+    idleRatePerHour: units(18),
+    patrolWeightCap: 8,
+    capArrestShiftBps: 800,
+    capConfShiftBps: 700,
+    enabled: true,
+    minTier: "kingpin",
   },
 ];
 

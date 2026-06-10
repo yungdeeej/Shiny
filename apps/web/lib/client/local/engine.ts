@@ -22,21 +22,28 @@ import {
   rollFromSeeds,
   sha256Hex,
   splitBail,
-  splitLoss,
   upgradeCost,
-  withdrawalTax,
 } from "@trash-wars/economy";
 import {
+  JACKPOT,
+  PASS,
   POLICY,
   SINKS,
   STAT_EFFECTS,
+  TIER_DEFINITIONS,
   TOS_VERSION,
   ZERO_STATS,
+  applyBps,
+  nextTier,
+  tierForHolding,
   toBaseUnits,
   type Character,
   type CharacterStats,
   type CosmeticItem,
+  type CredInfo,
+  type CredTier,
   type FeedEvent,
+  type JackpotState,
   type LeaderboardEntry,
   type Listing,
   type LocationConfig,
@@ -47,12 +54,14 @@ import {
   type MissionResult,
   type MissionStartRequest,
   type MissionVerify,
+  type PassState,
   type Patrol,
   type ProofOfReserves,
   type PublicStats,
   type PvpStats,
   type Raffle,
   type StatKey,
+  type TierPerks,
   type Withdrawal,
 } from "@trash-wars/shared";
 import { gameHoursToRealMs, realMsToGameHours } from "../../time";
@@ -80,7 +89,15 @@ import {
   recentFeed,
   syntheticPublicStats,
 } from "./bots";
-import { LOCAL_POLICY, STORE_ITEMS } from "./content";
+import {
+  DEMO_V11,
+  LOCAL_POLICY,
+  PASS_CHALLENGE_POOL,
+  PASS_REWARDS,
+  PENTHOUSE_LOCATION,
+  STORE_ITEMS,
+  type PassChallengeDef,
+} from "./content";
 import {
   defaultSave,
   loadSave,
@@ -107,6 +124,25 @@ function err(code: string, message: string): never {
 const STARTER_NAMES = ["Dusty", "Patches", "Grimey", "Smudge", "Banjo", "Pickle", "Soot", "Marbles"];
 const MINT_RACCOON = "mint-raccoon-s1";
 const MINT_BLOODHOUND = "mint-bloodhound-s1";
+const MINT_WAVE = "mint-wave-s1";
+
+/** All demo locations: Season 1 six + the Kingpin-gated penthouse. */
+const ALL_LOCATIONS: LocationConfig[] = [...SEASON1_LOCATIONS, PENTHOUSE_LOCATION];
+
+/** Demo game-week in real ms (168 game hours at 60×) — challenge rotation. */
+const GAME_WEEK_REAL_MS = gameHoursToRealMs(168);
+/** Demo game-day in real ms — daily XP caps. */
+const GAME_DAY_REAL_MS = gameHoursToRealMs(24);
+
+/** Human label for a tier. */
+const TIER_NAMES: Record<CredTier, string> = {
+  none: "No Cred",
+  alley: "Alley",
+  block: "Block",
+  district: "District",
+  borough: "Borough",
+  kingpin: "Kingpin",
+};
 
 /** Average confiscation flow per game-hour (whole SHINY) — drives patrol bounties. */
 const CONF_FLOW: Record<string, number> = {
@@ -122,6 +158,7 @@ export class LocalGameClient implements GameClient {
   private state: SaveState;
   private feedSubs = new Set<(e: FeedEvent) => void>();
   private userSubs = new Set<(e: UserEvent) => void>();
+  private jackpotSubs = new Set<(s: JackpotState) => void>();
   private feedBuffer: FeedEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -130,6 +167,7 @@ export class LocalGameClient implements GameClient {
     const now = Date.now();
     this.feedBuffer = recentFeed(now, 18);
     this.state.lastSeenBucket = bucketIndex(now);
+    this.ensureV11(now);
     if (this.state.user) {
       this.state.stats.loginFragments += 1;
       this.grantFragmentTickets();
@@ -193,9 +231,214 @@ export class LocalGameClient implements GameClient {
   }
 
   private loc(slug: string): LocationConfig {
-    const l = SEASON1_LOCATIONS.find((x) => x.slug === slug);
+    const l = ALL_LOCATIONS.find((x) => x.slug === slug);
     if (!l) err("NO_SUCH_LOCATION", `No location "${slug}" in Shorefront City.`);
     return l;
+  }
+
+  /* ── v1.1 internals: Street Cred / jackpot / pass ───────────────── */
+
+  /** Back-compat init for saves created before v1.1 (and first boot). */
+  private ensureV11(now: number): void {
+    if (this.state.user && !this.state.jackpot.winnableAt) {
+      const anchor = this.state.firstLoginAt ? Date.parse(this.state.firstLoginAt) : now;
+      this.state.jackpot.winnableAt = new Date(anchor + DEMO_V11.jackpotWinnableAfterRealMs).toISOString();
+    }
+    if (this.state.jackpot.history.length === 0) {
+      this.state.jackpot.history.push({
+        kind: "seed",
+        handle: null,
+        amount: str(JACKPOT.seedAmount),
+        poolAfter: str(JACKPOT.seedAmount),
+        at: this.state.firstLoginAt ?? new Date(now).toISOString(),
+      });
+    }
+    // sync tier with holding on boot (instant upgrades; grace handled in advance)
+    const raw = tierForHolding(big(this.state.simulatedHolding));
+    if (this.tierRank(raw) >= this.tierRank(this.state.credTier)) {
+      this.state.credTier = raw;
+      this.state.credGraceUntil = null;
+    }
+  }
+
+  private tierRank(t: CredTier): number {
+    return ["none", "alley", "block", "district", "borough", "kingpin"].indexOf(t);
+  }
+
+  /** Effective tier — what perks are computed from. */
+  private effectiveTier(): CredTier {
+    return this.state.credTier;
+  }
+
+  private perks(): TierPerks {
+    return TIER_DEFINITIONS[this.effectiveTier()].perks;
+  }
+
+  /** Run the anti-flicker grace machine (24h on mainnet, 2 real min in demo). */
+  private tickCred(now: number): boolean {
+    const raw = tierForHolding(big(this.state.simulatedHolding));
+    const cur = this.state.credTier;
+    if (this.tierRank(raw) >= this.tierRank(cur)) {
+      // at-or-above the held tier — upgrades are instant, cancel any grace
+      const changed = raw !== cur || this.state.credGraceUntil !== null;
+      this.state.credTier = raw;
+      this.state.credGraceUntil = null;
+      return changed;
+    }
+    // below threshold: start (or run out) the downgrade grace window
+    if (!this.state.credGraceUntil) {
+      this.state.credGraceUntil = new Date(now + DEMO_V11.credGraceRealMs).toISOString();
+      return true;
+    }
+    if (Date.parse(this.state.credGraceUntil) <= now) {
+      this.state.credTier = raw;
+      this.state.credGraceUntil = null;
+      return true;
+    }
+    return false;
+  }
+
+  /** "All crews are out…" — names the first tier that adds a slot. */
+  private slotLimitMessage(currentSlots: number): string {
+    let t = nextTier(this.effectiveTier());
+    while (t && TIER_DEFINITIONS[t].perks.missionSlots <= currentSlots) t = nextTier(t);
+    if (!t) return "All crews are out. Wait for a job to land before pulling another.";
+    const slots = TIER_DEFINITIONS[t].perks.missionSlots;
+    return `All crews are out. Street Cred ${TIER_NAMES[t]} unlocks ${slots === 2 ? "a second job" : `${slots} concurrent jobs`}.`;
+  }
+
+  private credInfo(): CredInfo {
+    const tier = this.effectiveTier();
+    const held = big(this.state.simulatedHolding);
+    const next = nextTier(tier);
+    const shortfall = next ? TIER_DEFINITIONS[next].minHeld - held : null;
+    return {
+      tier,
+      heldBalance: str(held),
+      nextTier: next,
+      shortfall: shortfall !== null ? str(shortfall > 0n ? shortfall : 0n) : null,
+      graceUntil: this.state.credGraceUntil,
+      perks: { ...this.perks() },
+    };
+  }
+
+  private jackpotPublic(now: number): JackpotState {
+    const j = this.state.jackpot;
+    const winnableAt = j.winnableAt ?? new Date(now + DEMO_V11.jackpotWinnableAfterRealMs).toISOString();
+    return {
+      pool: j.pool,
+      winnable: j.winnableAt !== null && Date.parse(j.winnableAt) <= now,
+      winnableAt,
+      seeded: str(JACKPOT.seedAmount),
+      hits: j.hits,
+      lastWinner: j.lastWinner ? { ...j.lastWinner } : null,
+    };
+  }
+
+  private emitJackpot(now: number): void {
+    if (this.jackpotSubs.size === 0) return;
+    const s = this.jackpotPublic(now);
+    for (const cb of this.jackpotSubs) cb(s);
+  }
+
+  private addToJackpot(amount: bigint): void {
+    this.state.jackpot.pool = str(big(this.state.jackpot.pool) + amount);
+  }
+
+  /** Bot losses visibly pump the counter a few hundred SHINY per bucket. */
+  private tickJackpotBots(now: number): boolean {
+    const bucket = Math.floor(now / DEMO_V11.jackpotBotBucketMs);
+    const j = this.state.jackpot;
+    if (j.lastBotBucket === 0) {
+      j.lastBotBucket = bucket;
+      return false;
+    }
+    if (bucket <= j.lastBotBucket) return false;
+    // accrue at most 30 buckets of catch-up so long-idle tabs don't explode the pool
+    const from = Math.max(j.lastBotBucket + 1, bucket - 30);
+    let added = 0n;
+    for (let b = from; b <= bucket; b++) {
+      const rng = makeRng(`jackpot-bots:${b}`);
+      added += toBaseUnits(120 + Math.floor(rng() * 520));
+    }
+    j.lastBotBucket = bucket;
+    if (added > 0n) {
+      this.addToJackpot(added);
+      this.emitJackpot(now);
+      return true;
+    }
+    return false;
+  }
+
+  private gameDayIndex(now: number): number {
+    const anchor = this.state.firstLoginAt ? Date.parse(this.state.firstLoginAt) : now;
+    return Math.max(0, Math.floor((now - anchor) / GAME_DAY_REAL_MS));
+  }
+
+  private gameWeekIndex(now: number): number {
+    const anchor = this.state.firstLoginAt ? Date.parse(this.state.firstLoginAt) : now;
+    return Math.max(0, Math.floor((now - anchor) / GAME_WEEK_REAL_MS));
+  }
+
+  private rollDailyCaps(now: number): void {
+    const day = this.gameDayIndex(now);
+    if (day !== this.state.pass.xpDayIndex) {
+      this.state.pass.xpDayIndex = day;
+      this.state.pass.raffleXpToday = 0;
+    }
+  }
+
+  /** Grant Heat XP (cap level 50) and emit the level-up event. */
+  private addXp(amount: number): void {
+    if (!this.state.user || amount <= 0) return;
+    const p = this.state.pass;
+    const before = Math.min(PASS.levels, Math.floor(p.xp / PASS.xpPerLevel));
+    p.xp = Math.min(PASS.levels * PASS.xpPerLevel, p.xp + amount);
+    const after = Math.min(PASS.levels, Math.floor(p.xp / PASS.xpPerLevel));
+    if (after > before) this.emitUser({ type: "pass_level_up", level: after });
+  }
+
+  /** This week's 3 challenges (deterministic rotation by demo game-week). */
+  private weekChallenges(now: number): Array<PassChallengeDef & { id: string; week: number }> {
+    const week = this.gameWeekIndex(now);
+    const rng = makeRng(`pass-challenges:s1:${week}`);
+    const pool = [...PASS_CHALLENGE_POOL];
+    const picked: PassChallengeDef[] = [];
+    while (picked.length < PASS.challengesPerWeek && pool.length > 0) {
+      const idx = Math.floor(rng() * pool.length);
+      picked.push(...pool.splice(idx, 1));
+    }
+    return picked.map((c) => ({ ...c, id: `s1w${week}-${c.slug}`, week }));
+  }
+
+  /** Bump weekly-challenge progress for a game event; awards 150 XP once. */
+  private trackChallenge(now: number, kind: PassChallengeDef["kind"], ref?: string, count = 1): void {
+    if (!this.state.user) return;
+    const p = this.state.pass;
+    for (const c of this.weekChallenges(now)) {
+      if (c.kind !== kind) continue;
+      if (c.kind === "resolve_at" && c.ref !== ref) continue;
+      const cur = p.challengeProgress[c.id] ?? 0;
+      if (cur >= c.target) continue;
+      const next = Math.min(c.target, cur + count);
+      p.challengeProgress[c.id] = next;
+      if (next >= c.target && !p.challengeAwarded.includes(c.id)) {
+        p.challengeAwarded.push(c.id);
+        this.addXp(PASS.xp.weeklyChallenge);
+      }
+    }
+  }
+
+  /** Borough+ perk: one free raffle ticket per week (idempotent per week). */
+  private tickWeeklyRaffleGrant(now: number): boolean {
+    if (!this.state.user) return false;
+    if (this.perks().weeklyRaffleTickets <= 0) return false;
+    const week = this.gameWeekIndex(now);
+    if (week <= this.state.pass.lastRaffleGrantWeek) return false;
+    this.state.pass.lastRaffleGrantWeek = week;
+    const raffle = this.state.raffles.find((r) => r.state === "open");
+    if (raffle) raffle.myTickets = (raffle.myTickets ?? 0) + this.perks().weeklyRaffleTickets;
+    return true;
   }
 
   private char(id: string): Character {
@@ -236,6 +479,12 @@ export class LocalGameClient implements GameClient {
 
   private advance(now: number): void {
     let dirty = false;
+
+    // v1.1: cred grace machine, bot jackpot accrual, weekly raffle grant
+    this.rollDailyCaps(now);
+    if (this.tickCred(now)) dirty = true;
+    if (this.tickJackpotBots(now)) dirty = true;
+    if (this.tickWeeklyRaffleGrant(now)) dirty = true;
 
     // live ambient feed
     const bucket = bucketIndex(now);
@@ -308,16 +557,47 @@ export class LocalGameClient implements GameClient {
       case "win":
       case "jackpot": {
         this.credit(payout);
-        const profit = payout - stake;
+        let totalPaid = payout;
+        // v1.1: a `jackpot` roll at The Mint after winnable-at ALSO wins the
+        // public pool (minus the 10% reset floor) — same roll, same commit.
+        if (row.outcome === "jackpot" && m.locationSlug === "the-mint") {
+          const now = Date.now();
+          const j = this.state.jackpot;
+          if (j.winnableAt && Date.parse(j.winnableAt) <= now) {
+            const pool = big(j.pool);
+            const floor = applyBps(pool, JACKPOT.resetFloorBps);
+            const poolPayout = pool - floor;
+            if (poolPayout > 0n) {
+              this.credit(poolPayout);
+              totalPaid += poolPayout;
+              j.pool = str(floor);
+              j.hits += 1;
+              j.lastWinner = { handle, amount: str(poolPayout), at: new Date(now).toISOString() };
+              j.history.push({
+                kind: "win", handle, amount: str(poolPayout), poolAfter: str(floor),
+                at: new Date(now).toISOString(),
+              });
+              detail.jackpotPool = str(poolPayout);
+              this.emitFeed({
+                id: `vault-${m.id}`, type: "jackpot", locationSlug: m.locationSlug, actor: handle,
+                amountBand: formatBand(poolPayout),
+                message: `THE VAULT FALLS — ${handle} emptied The Mint's pool for ${Number(poolPayout / 1_000_000n).toLocaleString("en-US")} $SHINY`,
+                at: new Date(now).toISOString(),
+              });
+              this.emitJackpot(now);
+            }
+          }
+        }
+        const profit = totalPaid - stake;
         this.state.stats.totalEarned = str(big(this.state.stats.totalEarned) + (profit > 0n ? profit : 0n));
-        if (payout > big(this.state.stats.biggestHeist)) this.state.stats.biggestHeist = str(payout);
+        if (totalPaid > big(this.state.stats.biggestHeist)) this.state.stats.biggestHeist = str(totalPaid);
         this.emitFeed({
           id: `you-${m.id}`,
           type: row.outcome,
           locationSlug: m.locationSlug,
           actor: handle,
           multiplierBps: row.multiplierBps,
-          amountBand: formatBand(payout),
+          amountBand: formatBand(totalPaid),
           message:
             row.outcome === "jackpot"
               ? `JACKPOT — ${handle} cracked ${locName} for ${((row.multiplierBps ?? 0) / 10_000).toFixed(1)}×`
@@ -343,7 +623,14 @@ export class LocalGameClient implements GameClient {
         break;
       }
       case "confiscation": {
-        this.toPd(stake);
+        // v1.1: confiscations are loss flows like rekts — same 3-way splitLoss
+        // routing as the live engine (settle.ts), or APR/jackpot accrual drift.
+        const pdShare = applyBps(stake, POLICY.lossSplit.pdBps);
+        const jpShare = applyBps(stake, POLICY.lossSplit.jackpotBps);
+        this.burn(stake - pdShare - jpShare);
+        this.toPd(pdShare);
+        this.addToJackpot(jpShare);
+        this.emitJackpot(Date.now());
         this.state.stats.totalConfiscated = str(big(this.state.stats.totalConfiscated) + stake);
         this.emitFeed({
           id: `you-${m.id}`, type: "confiscation", locationSlug: m.locationSlug, actor: handle,
@@ -355,9 +642,14 @@ export class LocalGameClient implements GameClient {
       }
       case "rekt_items":
       case "rekt_character": {
-        const { burn, pd } = splitLoss(stake);
-        this.burn(burn);
+        // v1.1 loss routing (POLICY.lossSplit): 94.5% burn / 0.5% PD / 5% jackpot,
+        // conservation-safe — burn takes the exact remainder.
+        const pd = applyBps(stake, POLICY.lossSplit.pdBps);
+        const jackpotShare = applyBps(stake, POLICY.lossSplit.jackpotBps);
+        this.burn(stake - pd - jackpotShare);
         this.toPd(pd);
+        this.addToJackpot(jackpotShare);
+        this.emitJackpot(Date.now());
         if (character) {
           if (character.cosmetics.length > 0) {
             const idx = Math.floor(roll * character.cosmetics.length) % character.cosmetics.length;
@@ -390,6 +682,24 @@ export class LocalGameClient implements GameClient {
       detail,
     };
     this.state.stats.missionCount += 1;
+
+    // v1.1 season pass: Heat XP + weekly challenge progress (play is play —
+    // mission XP lands win or lose)
+    const now = Date.now();
+    this.rollDailyCaps(now);
+    this.addXp(PASS.xp.missionResolved);
+    const day = this.gameDayIndex(now);
+    if (this.state.pass.firstMissionDayIndex !== day) {
+      this.state.pass.firstMissionDayIndex = day;
+      this.addXp(PASS.xp.dailyFirstMission);
+    }
+    this.trackChallenge(now, "resolve_at", m.locationSlug);
+    const locCfg = this.loc(m.locationSlug);
+    if (locCfg.rektCapable && row.outcome !== "rekt_items" && row.outcome !== "rekt_character") {
+      this.trackChallenge(now, "survive_rekt");
+    }
+    if (row.outcome === "win" || row.outcome === "jackpot") this.trackChallenge(now, "wins");
+
     this.emitUser({ type: "mission_resolved", mission: this.sanitizeMission(m), result: m.result });
   }
 
@@ -409,6 +719,7 @@ export class LocalGameClient implements GameClient {
     const bounty = toBaseUnits(whole);
     this.credit(bounty);
     this.state.stats.houndEarned = str(big(this.state.stats.houndEarned) + bounty);
+    this.addXp(PASS.xp.patrolCompleted);
     this.emitUser({
       type: "patrol_ended",
       patrol: {
@@ -543,6 +854,7 @@ export class LocalGameClient implements GameClient {
       flags: ["beta"],
       role: "player",
       createdAt: u.createdAt,
+      cred: this.credInfo(),
     };
   }
 
@@ -562,6 +874,20 @@ export class LocalGameClient implements GameClient {
     this.state.firstLoginAt = now.toISOString();
     this.state.lastSeenBucket = bucketIndex(now.getTime());
     this.state.stats.loginFragments = 1;
+
+    // v1.1: the vault opens 15 real minutes after first login (beta time);
+    // the pool itself has been accruing since the 2M seed.
+    this.state.jackpot.winnableAt = new Date(
+      now.getTime() + DEMO_V11.jackpotWinnableAfterRealMs,
+    ).toISOString();
+    if (this.state.jackpot.history.length === 0) {
+      this.state.jackpot.history.push({
+        kind: "seed", handle: null,
+        amount: str(JACKPOT.seedAmount), poolAfter: str(JACKPOT.seedAmount),
+        at: now.toISOString(),
+      });
+    }
+    this.state.credTier = tierForHolding(big(this.state.simulatedHolding));
 
     // starter raccoon, dna from the handle
     const dna = sha256Hex(handle);
@@ -623,7 +949,9 @@ export class LocalGameClient implements GameClient {
 
   async getLocations(): Promise<LocationLive[]> {
     const now = Date.now();
-    return SEASON1_LOCATIONS.map((l) => {
+    // The Penthouse Job is in the location data only for Kingpin (specs/01)
+    const visible = this.perks().penthouseAccess ? ALL_LOCATIONS : SEASON1_LOCATIONS;
+    return visible.map((l) => {
       const weight = this.totalWeight(l.slug, now);
       return {
         ...l,
@@ -645,6 +973,16 @@ export class LocalGameClient implements GameClient {
     if (stake < big(loc.minStake)) err("STAKE_TOO_LOW", `Minimum stake here is ${loc.minStake} base units.`);
     if (stake > big(loc.maxStake)) err("STAKE_TOO_HIGH", "That's more than this place can hold.");
 
+    // v1.1 Street Cred gates: penthouse access + concurrent mission slots
+    const perks = this.perks();
+    if (loc.slug === PENTHOUSE_LOCATION.slug && !perks.penthouseAccess) {
+      err("PENTHOUSE_LOCKED", "The doorman doesn't know you. The Penthouse Job is Kingpin territory — hold 5,000,000 $SHINY.");
+    }
+    const activeCount = this.state.missions.filter((x) => x.state === "active").length;
+    if (activeCount >= perks.missionSlots) {
+      err("SLOT_LIMIT", this.slotLimitMessage(perks.missionSlots));
+    }
+
     let stats: CharacterStats = ZERO_STATS;
     let character: Character | undefined;
     if (req.characterId) {
@@ -654,8 +992,8 @@ export class LocalGameClient implements GameClient {
       stats = character.stats;
     } else {
       if (!loc.freeTierAllowed) err("CHARACTER_REQUIRED", "This job needs a crew member.");
-      if (this.balanceBig() < POLICY.freeTierMinHolding)
-        err("HOLDING_GATE", "Free tier needs 10,000 $SHINY held.");
+      if (!perks.freeTierAccess)
+        err("HOLDING_GATE", "Free tier needs Alley cred — 10,000 $SHINY held in your wallet. (Beta: set your simulated holding on the Street Cred page.)");
       if (stake > POLICY.freeTierMaxStake) err("FREE_TIER_CAP", "Free tier caps at 5,000 $SHINY.");
       const last = this.state.stats.lastFreeTierAt;
       if (last && now - Date.parse(last) < gameHoursToRealMs(POLICY.freeTierCooldownHours)) {
@@ -709,16 +1047,22 @@ export class LocalGameClient implements GameClient {
     return m.result ? { ...this.sanitizeMission(m), result: m.result } : this.sanitizeMission(m);
   }
 
-  async buyInsurance(id: string): Promise<Mission> {
+  async buyInsurance(id: string, opts?: { useVoucher?: boolean }): Promise<Mission> {
     const m = this.state.missions.find((x) => x.id === id);
     if (!m) err("NO_SUCH_MISSION", "No record of that job.");
     if (m.state !== "active") err("MISSION_DONE", "Too late for paperwork.");
     if (m.insurance) err("ALREADY_INSURED", "Already covered.");
     const loc = this.loc(m.locationSlug);
     if (!loc.rektCapable) err("NOT_REKT_CAPABLE", "Nothing here can kill you. Save the premium.");
-    const price = insurancePrice(big(m.stake), loc);
-    this.debit(price, "insurance");
-    this.burn(price);
+    if (opts?.useVoucher) {
+      // v1.1 season pass voucher: covers the job, no premium, no burn
+      if (this.state.pass.vouchers <= 0) err("NO_VOUCHERS", "No insurance vouchers left. Earn them on the Season Pass.");
+      this.state.pass.vouchers -= 1;
+    } else {
+      const price = insurancePrice(big(m.stake), loc);
+      this.debit(price, "insurance");
+      this.burn(price);
+    }
     m.insurance = true;
     this.save();
     return this.sanitizeMission(m);
@@ -801,13 +1145,17 @@ export class LocalGameClient implements GameClient {
   async bail(id: string): Promise<Character> {
     const c = this.char(id);
     if (c.status !== "jailed") err("NOT_JAILED", `${c.name} is a free mammal.`);
-    const price = bailPrice();
+    // v1.1: Block+ cred shaves the bail price (status perk, not yield)
+    const base = bailPrice();
+    const price = base - applyBps(base, this.perks().bailDiscountBps);
     this.debit(price, "bail");
     const { burn, pd } = splitBail(price);
     this.burn(burn);
     this.toPd(pd);
     c.status = "idle";
     c.jailedUntil = null;
+    this.addXp(PASS.xp.bailPaid);
+    this.trackChallenge(Date.now(), "bails");
     this.save();
     return { ...c };
   }
@@ -843,6 +1191,17 @@ export class LocalGameClient implements GameClient {
     return { ...c };
   }
 
+  /** Next limited wave timing: cycles every 20 real minutes from first login. */
+  private waveTimes(now: number): { publicOpensAt: number; earlyOpensAt: number; closesAt: number } {
+    const anchor = this.state.firstLoginAt ? Date.parse(this.state.firstLoginAt) : now;
+    const cycle = DEMO_V11.mintWaveCycleRealMs;
+    const k = Math.floor((now - anchor) / cycle) + 1;
+    const publicOpensAt = anchor + k * cycle;
+    // District+ get in `mintEarlyAccessHours` game-hours early (1 game h = 1 real min)
+    const earlyOpensAt = publicOpensAt - gameHoursToRealMs(this.perks().mintEarlyAccessHours);
+    return { publicOpensAt, earlyOpensAt, closesAt: publicOpensAt + cycle / 2 };
+  }
+
   async getMintEvents(): Promise<MintEvent[]> {
     const now = Date.now();
     const season = this.state.firstLoginAt ?? new Date(now).toISOString();
@@ -858,13 +1217,33 @@ export class LocalGameClient implements GameClient {
         state: remaining === 0 ? "soldout" : "open",
       };
     };
-    return [mk(MINT_RACCOON, "raccoon", 500), mk(MINT_BLOODHOUND, "bloodhound", 50)];
+    // v1.1: a recurring limited wave whose door opens early for District+
+    const { publicOpensAt, earlyOpensAt, closesAt } = this.waveTimes(now);
+    const open = now >= (this.perks().mintEarlyAccessHours > 0 ? earlyOpensAt : publicOpensAt);
+    const waveKey = `${MINT_WAVE}-${publicOpensAt}`;
+    const taken = (this.state.playerMints[waveKey] ?? 0) + (open ? Math.floor((now - earlyOpensAt) / 45_000) : 0);
+    const wave: MintEvent = {
+      id: waveKey,
+      faction: "raccoon",
+      price: str(mintPrice("raccoon")),
+      supply: 50,
+      remaining: Math.max(0, 50 - taken),
+      opensAt: new Date(publicOpensAt).toISOString(),
+      closesAt: new Date(closesAt).toISOString(),
+      state: taken >= 50 ? "soldout" : open ? "open" : "upcoming",
+    };
+    return [wave, mk(MINT_RACCOON, "raccoon", 500), mk(MINT_BLOODHOUND, "bloodhound", 50)];
   }
 
   async mint(eventId: string): Promise<Character> {
     const events = await this.getMintEvents();
     const ev = events.find((e) => e.id === eventId);
     if (!ev) err("NO_SUCH_MINT", "That mint wave doesn't exist.");
+    if (ev.state === "upcoming") {
+      err("WAVE_NOT_OPEN", this.perks().mintEarlyAccessHours > 0
+        ? "Your early door isn't open yet. Watch the countdown."
+        : "Wave isn't open yet. District cred gets in an hour early.");
+    }
     if (ev.state !== "open" || ev.remaining <= 0) err("SOLD_OUT", "Wave's gone. Watch the feed for the next one.");
     if (ev.faction === "bloodhound") {
       const hounds = this.state.characters.filter((c) => c.faction === "bloodhound" && c.status !== "dead").length;
@@ -977,7 +1356,8 @@ export class LocalGameClient implements GameClient {
     const amt = big(amount);
     if (amt < POLICY.minWithdrawal) err("MIN_WITHDRAWAL", "Minimum withdrawal is 5,000 $SHINY.");
     if (dest.trim().length < 3) err("BAD_DEST", "Give the courier an address.");
-    const fee = withdrawalTax(amt);
+    // v1.1: withdrawal fee is f(tier) — 5% Alley → 2% Kingpin
+    const fee = applyBps(amt, this.perks().withdrawalFeeBps);
     this.debit(amt, "the withdrawal");
     this.state.treasuryFromPlayer = str(big(this.state.treasuryFromPlayer) + fee);
     const w: Withdrawal = {
@@ -1067,6 +1447,16 @@ export class LocalGameClient implements GameClient {
     this.debit(cost, "raffle tickets");
     this.burn(cost);
     r.myTickets = (r.myTickets ?? 0) + n;
+    // v1.1 pass: 5 XP per ticket, capped at 25/day
+    const now = Date.now();
+    this.rollDailyCaps(now);
+    const room = Math.max(0, PASS.xp.raffleTicketDailyCap - this.state.pass.raffleXpToday);
+    const grant = Math.min(room, n * PASS.xp.raffleTicket);
+    if (grant > 0) {
+      this.state.pass.raffleXpToday += grant;
+      this.addXp(grant);
+    }
+    this.trackChallenge(now, "raffle_tickets", undefined, n);
     this.save();
     return this.publicRaffle(r);
   }
@@ -1207,6 +1597,122 @@ export class LocalGameClient implements GameClient {
       ratioBps: Number((reserves * 10_000n) / (totalLiab === 0n ? 1n : totalLiab)),
       healthy: true,
     };
+  }
+
+  /* ── v1.1: progressive jackpot ──────────────────────────────────── */
+
+  async getJackpot(): Promise<JackpotState> {
+    const now = Date.now();
+    this.advance(now);
+    return this.jackpotPublic(now);
+  }
+
+  onJackpotTick(cb: (state: JackpotState) => void): Unsubscribe {
+    this.jackpotSubs.add(cb);
+    cb(this.jackpotPublic(Date.now()));
+    return () => this.jackpotSubs.delete(cb);
+  }
+
+  /* ── v1.1: season pass ──────────────────────────────────────────── */
+
+  private passPublic(now: number): PassState {
+    const p = this.state.pass;
+    const level = Math.min(PASS.levels, Math.floor(p.xp / PASS.xpPerLevel));
+    const rewards: PassState["rewards"] = PASS_REWARDS.map((r) => {
+      const claimed = p.claimed.includes(r.id);
+      const unlocked = level >= r.level && (r.track === "free" || p.premium);
+      return {
+        id: r.id,
+        level: r.level,
+        track: r.track,
+        kind: r.kind,
+        refSlug: r.refSlug,
+        amount: r.amount,
+        claimed,
+        claimable: unlocked && !claimed,
+      };
+    });
+    const challenges: PassState["challenges"] = this.weekChallenges(now).map((c) => {
+      const progress = Math.min(c.target, p.challengeProgress[c.id] ?? 0);
+      return {
+        id: c.id,
+        slug: c.slug,
+        description: c.description,
+        week: c.week,
+        target: c.target,
+        progress,
+        xp: PASS.xp.weeklyChallenge,
+        completed: progress >= c.target,
+      };
+    });
+    return {
+      season: 1,
+      premium: p.premium,
+      level,
+      xp: p.xp,
+      xpIntoLevel: level >= PASS.levels ? PASS.xpPerLevel : p.xp % PASS.xpPerLevel,
+      xpPerLevel: PASS.xpPerLevel,
+      insuranceVouchers: p.vouchers,
+      rewards,
+      challenges,
+    };
+  }
+
+  async getPass(): Promise<PassState> {
+    this.requireUser();
+    const now = Date.now();
+    this.advance(now);
+    return this.passPublic(now);
+  }
+
+  /** BETA rail: premium is granted free, play-money framing (specs/02). */
+  async buyPass(): Promise<PassState> {
+    this.requireUser();
+    if (!this.state.pass.premium) {
+      this.state.pass.premium = true; // idempotent; retroactive claims unlock automatically
+      this.save();
+    }
+    return this.passPublic(Date.now());
+  }
+
+  async claimPassReward(rewardId: string): Promise<PassState> {
+    this.requireUser();
+    const now = Date.now();
+    const def = PASS_REWARDS.find((r) => r.id === rewardId);
+    if (!def) err("NO_SUCH_REWARD", "That reward isn't on the ladder.");
+    const p = this.state.pass;
+    if (p.claimed.includes(def.id)) return this.passPublic(now); // idempotent
+    const level = Math.min(PASS.levels, Math.floor(p.xp / PASS.xpPerLevel));
+    if (level < def.level) err("LEVEL_LOCKED", `Heat level ${def.level} required.`);
+    if (def.track === "premium" && !p.premium) err("PREMIUM_LOCKED", "Premium track needs the pass. Flex, not power.");
+    p.claimed.push(def.id);
+    switch (def.kind) {
+      case "cosmetic":
+      case "nameplate":
+        if (def.refSlug) this.state.inventory.push(def.refSlug);
+        break;
+      case "insurance_voucher":
+        p.vouchers += def.amount ?? 1;
+        break;
+      case "raffle_fragments":
+        this.state.stats.loginFragments += def.amount ?? 1;
+        this.grantFragmentTickets();
+        break;
+    }
+    this.save();
+    return this.passPublic(now);
+  }
+
+  /* ── v1.1: Street Cred beta simulator ───────────────────────────── */
+
+  /** DEMO ONLY — sets the simulated wallet holding ("buy on Jupiter" stand-in). */
+  async simulateHolding(amount: string): Promise<MeResponse> {
+    this.requireUser();
+    if (!/^\d+$/.test(amount)) err("BAD_AMOUNT", "Holding must be a base-unit integer string.");
+    this.state.simulatedHolding = amount;
+    this.tickCred(Date.now());
+    this.save();
+    return this.getMe();
   }
 
   /* ── live ───────────────────────────────────────────────────────── */

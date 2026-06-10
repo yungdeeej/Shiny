@@ -1,4 +1,4 @@
-import { toBaseUnits, type CosmeticItem } from "@trash-wars/shared";
+import { locationConfig, toBaseUnits, type CosmeticItem, type LocationConfig } from "@trash-wars/shared";
 
 const u = (whole: number): string => toBaseUnits(whole).toString();
 
@@ -14,6 +14,137 @@ export const LOCAL_POLICY = {
   starterBalance: toBaseUnits(100_000),
   loginFragmentsPerTicket: 5,
 } as const;
+
+/* ── v1.1 demo compressions (labeled "beta time" in the UI) ───────── */
+
+export const DEMO_V11 = {
+  /** Street Cred downgrade grace: 24h on mainnet, compressed to 2 real minutes. */
+  credGraceRealMs: 2 * 60_000,
+  /** Jackpot winnable 15 real minutes after first login (wk8 compressed). */
+  jackpotWinnableAfterRealMs: 15 * 60_000,
+  /** Bot losses pump the public pool every bucket (a few hundred SHINY each). */
+  jackpotBotBucketMs: 20_000,
+  /** Default simulated wallet holding: 10,000 SHINY → Alley. */
+  defaultHolding: toBaseUnits(10_000),
+  /** /cred simulator presets (whole SHINY). */
+  holdingPresets: [10_000, 50_000, 250_000, 1_000_000, 5_000_000],
+  /** Limited mint waves cycle every 20 real minutes (early access = tier hours). */
+  mintWaveCycleRealMs: 20 * 60_000,
+} as const;
+
+/** Kingpin-only location (specs/01 — "The Penthouse Job", best EV curve). */
+export const PENTHOUSE_LOCATION: LocationConfig = locationConfig.parse({
+  slug: "the-penthouse",
+  name: "The Penthouse Job",
+  tagline: "Top floor of the city. Kingpins only — the doorman knows.",
+  durationHours: 16,
+  minStake: u(800),
+  maxStake: u(1_250),
+  table: [
+    { outcome: "win", probabilityBps: 2_400, multiplierBps: 36_000 },
+    { outcome: "jackpot", probabilityBps: 250, multiplierBps: 90_000 },
+    { outcome: "nothing", probabilityBps: 1_950 },
+    { outcome: "arrest", probabilityBps: 2_400 },
+    { outcome: "confiscation", probabilityBps: 2_100 },
+    { outcome: "rekt_character", probabilityBps: 900 },
+  ],
+  requiresCharacter: true,
+  freeTierAllowed: false,
+  rektCapable: true,
+  insuranceBps: 2_600,
+  idleRatePerHour: u(15),
+  patrolWeightCap: 10,
+  capArrestShiftBps: 900,
+  capConfShiftBps: 800,
+  enabled: true,
+});
+
+/* ── Season Pass content (specs/02) ───────────────────────────────── */
+
+export interface PassRewardDef {
+  id: string;
+  level: number;
+  track: "free" | "premium";
+  kind: "cosmetic" | "insurance_voucher" | "raffle_fragments" | "nameplate";
+  refSlug: string | null;
+  amount: number | null;
+}
+
+/** Pass-exclusive nameplates at premium 10/25/50 (never sold, never stats). */
+export const PASS_NAMEPLATES: Record<number, string> = {
+  10: "nameplate-heat-bronze",
+  25: "nameplate-heat-silver",
+  50: "nameplate-heat-gold",
+};
+
+const FREE_TRACK: Array<[number, PassRewardDef["kind"], string | null, number | null]> = [
+  [5, "raffle_fragments", null, 2],
+  [10, "cosmetic", "hat-beanie", null],
+  [15, "insurance_voucher", null, 1],
+  [20, "raffle_fragments", null, 3],
+  [25, "cosmetic", "banner-skyline", null],
+  [30, "insurance_voucher", null, 1],
+  [35, "raffle_fragments", null, 3],
+  [40, "cosmetic", "coat-trench", null],
+  [45, "raffle_fragments", null, 2],
+  [50, "cosmetic", "hat-fedora", null],
+];
+
+const PREMIUM_COSMETIC_CYCLE = [
+  "hat-fedora", "mask-visor", "coat-trench", "companion-pigeon", "hat-beanie", "banner-skyline", "hat-crown",
+];
+const PREMIUM_VOUCHER_LEVELS = new Set([5, 15, 20, 30, 40]);
+
+/**
+ * Reward ladder: free every 5 levels, premium every level. Iron rule (doc 13
+ * §4): cosmetics / vouchers / fragments / nameplates only — NEVER $SHINY
+ * amounts, NEVER stat effects.
+ */
+export const PASS_REWARDS: PassRewardDef[] = (() => {
+  const out: PassRewardDef[] = [];
+  for (const [level, kind, refSlug, amount] of FREE_TRACK) {
+    out.push({ id: `s1-free-${level}`, level, track: "free", kind, refSlug, amount });
+  }
+  for (let level = 1; level <= 50; level++) {
+    let kind: PassRewardDef["kind"];
+    let refSlug: string | null = null;
+    let amount: number | null = null;
+    if (PASS_NAMEPLATES[level]) {
+      kind = "nameplate";
+      refSlug = PASS_NAMEPLATES[level] ?? null;
+    } else if (PREMIUM_VOUCHER_LEVELS.has(level)) {
+      kind = "insurance_voucher";
+      amount = 1;
+    } else if (level % 7 === 0) {
+      kind = "cosmetic";
+      refSlug = PREMIUM_COSMETIC_CYCLE[(level / 7 - 1) % PREMIUM_COSMETIC_CYCLE.length] ?? "hat-fedora";
+    } else {
+      kind = "raffle_fragments";
+      amount = level % 2 === 0 ? 3 : 2;
+    }
+    out.push({ id: `s1-prem-${level}`, level, track: "premium", kind, refSlug, amount });
+  }
+  return out;
+})();
+
+export interface PassChallengeDef {
+  slug: string;
+  description: string;
+  kind: "resolve_at" | "survive_rekt" | "raffle_tickets" | "wins" | "bails";
+  /** location slug for resolve_at */
+  ref?: string;
+  target: number;
+}
+
+/** Weekly rotation pool — 3 picked per demo game-week. */
+export const PASS_CHALLENGE_POOL: PassChallengeDef[] = [
+  { slug: "pawn-jobs-3", description: "Pull 3 jobs at the Pawn Shop", kind: "resolve_at", ref: "pawn-shop", target: 3 },
+  { slug: "survive-rekt-2", description: "Survive a rekt-capable location twice", kind: "survive_rekt", target: 2 },
+  { slug: "raffle-5", description: "Buy 5 raffle tickets", kind: "raffle_tickets", target: 5 },
+  { slug: "corner-jobs-5", description: "Pull 5 jobs at the Corner Store", kind: "resolve_at", ref: "corner-store", target: 5 },
+  { slug: "clean-getaways-3", description: "Walk away clean 3 times", kind: "wins", target: 3 },
+  { slug: "bail-out-1", description: "Bail a crew member out of the tank", kind: "bails", target: 1 },
+];
 
 /** Season-1 cosmetics catalogue (beta). Slugs double as avatar layer keys. */
 export const STORE_ITEMS: CosmeticItem[] = [

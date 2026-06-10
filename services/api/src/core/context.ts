@@ -36,6 +36,7 @@ export async function buildContext(env: Env, opts: BuildContextOptions = {}): Pr
   const accounts = await ledger.ensureSystemAccounts();
   const chain = createChainProvider({
     BETA_MODE: env.beta ? "1" : "0",
+    BETA_STUB_HOLDING: env.betaStubHolding.toString(),
     SOLANA_RPC_URL: env.solanaRpcUrl,
     SHINY_MINT: env.shinyMint,
     DEPOSIT_ADDRESS: env.depositAddress,
@@ -43,7 +44,7 @@ export async function buildContext(env: Env, opts: BuildContextOptions = {}): Pr
   });
   const bus = new GameBus();
 
-  return {
+  const ctx: AppContext = {
     db,
     ledger,
     chain,
@@ -58,4 +59,11 @@ export async function buildContext(env: Env, opts: BuildContextOptions = {}): Pr
       await closeDb(db);
     },
   };
+
+  // v1.1 (specs/02): Season Pass XP fan-out listens to every user event —
+  // registered here so BOTH the API and the worker grant XP from their paths.
+  const { registerPassListeners } = await import("./pass.js");
+  registerPassListeners(ctx);
+
+  return ctx;
 }

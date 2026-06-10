@@ -236,7 +236,7 @@ export function resolveMission(table: ProbabilityTable, roll: number): OutcomeRo
  * Payout for a resolved row:
  * - win/jackpot: stake * multiplierBps / 10000 (bigint floor)
  * - nothing/arrest: the stake is returned
- * - confiscation/rekt_*: 0 (the stake is lost — routed 50/50 burn/PD by the caller)
+ * - confiscation/rekt_*: 0 (the stake is lost — routed burn/PD/jackpot via splitLoss by the caller)
  */
 export function computePayout(stake: bigint, row: OutcomeRow): bigint {
   switch (row.outcome) {
@@ -344,12 +344,15 @@ export function mintPrice(faction: "raccoon" | "bloodhound"): bigint {
 }
 
 /**
- * Split a lost mission stake 50/50 burn/PD pool (POLICY.lossSplit).
- * Conservation-safe: pd takes the exact remainder after the bps floor on burn.
+ * Split a lost mission stake three ways per POLICY.lossSplit (v1.1, specs/03):
+ * 94.5% burn / 0.5% PD pool / 5% progressive jackpot pool.
+ * Conservation-safe at bigint boundaries: pd and jackpot take their bps floors,
+ * burn takes the exact remainder (indivisible base units route to burn).
  */
-export function splitLoss(amount: bigint): { burn: bigint; pd: bigint } {
-  const burn = applyBps(amount, POLICY.lossSplit.burnBps);
-  return { burn, pd: amount - burn };
+export function splitLoss(amount: bigint): { burn: bigint; pd: bigint; jackpot: bigint } {
+  const pd = applyBps(amount, POLICY.lossSplit.pdBps);
+  const jackpot = applyBps(amount, POLICY.lossSplit.jackpotBps);
+  return { burn: amount - pd - jackpot, pd, jackpot };
 }
 
 /** Split a bail payment 75% burn / 25% PD pool (POLICY.bailSplit), conservation-safe. */
