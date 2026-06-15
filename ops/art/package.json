@@ -1,36 +1,27 @@
 {
-  "name": "@trash-wars/worker",
+  "name": "@trash-wars/art-studio",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Generative NFT collection + marketing asset pipeline for Trash Wars.",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
-    "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "lint": "echo 'worker: no lint configured'"
+    "lint": "echo 'art-studio: no lint configured'",
+    "gen:collection": "tsx src/generate-collection.ts",
+    "gen:marketing": "tsx src/generate-marketing.ts"
   },
   "dependencies": {
     "@metaplex-foundation/mpl-core": "^1.1.1",
-    "@metaplex-foundation/mpl-toolbox": "^0.9.4",
     "@metaplex-foundation/umi": "^0.9.2",
     "@metaplex-foundation/umi-bundle-defaults": "^0.9.2",
-    "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.4",
-    "@trash-wars/api": "workspace:*",
-    "@trash-wars/chain": "workspace:*",
-    "@trash-wars/db": "workspace:*",
+    "@metaplex-foundation/umi-uploader-irys": "^0.9.2",
     "@trash-wars/economy": "workspace:*",
     "@trash-wars/shared": "workspace:*",
-    "bs58": "^6.0.0",
-    "bullmq": "^5.34.3",
-    "ioredis": "^5.4.1",
-    "pino": "^9.5.0"
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "pino-pretty": "^13.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

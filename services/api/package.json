@@ -22,6 +22,7 @@
     "@fastify/helmet": "^11.1.1",
     "@fastify/rate-limit": "^9.1.0",
     "@fastify/websocket": "^10.0.1",
+    "@solana/web3.js": "^1.98.4",
     "@trash-wars/chain": "workspace:*",
     "@trash-wars/db": "workspace:*",
     "@trash-wars/economy": "workspace:*",

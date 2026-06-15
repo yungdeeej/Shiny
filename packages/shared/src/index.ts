@@ -4,3 +4,4 @@ export * from "./api.js";
 export * from "./constants.js";
 export * from "./api-extra.js";
 export * from "./cred.js";
+export * from "./payments.js";
