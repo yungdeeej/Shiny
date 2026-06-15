@@ -1,11 +1,25 @@
 /** Store module: cosmetics catalog, SHINY-rail purchases (100% burn), equip system. */
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { equipRequest, storeBuyRequest, type CosmeticItem } from "@trash-wars/shared";
-import { characters, cosmeticItems, userCosmetics } from "@trash-wars/db";
+import {
+  equipRequest,
+  storeBuyRequest,
+  solConfirmRequest,
+  type CosmeticItem,
+  type SolBuyResponse,
+  type SolConfirmResponse,
+} from "@trash-wars/shared";
+import { characters, cosmeticItems, solPayments, userCosmetics, wallets } from "@trash-wars/db";
 import { and, eq, isNull, or, sql } from "../core/orm.js";
 import { badRequest, conflict, insufficientFunds, notFound, notImplemented } from "../core/errors.js";
 import { getUserAccount, unlockedBalance } from "../core/accounts.js";
+import {
+  buildSolPayment,
+  getSolRail,
+  priceLamports,
+  readMemoRef,
+  verifySolPayment,
+} from "../core/sol-payments.js";
 import { requireTos } from "./session.js";
 
 function itemToApi(i: typeof cosmeticItems.$inferSelect): CosmeticItem {
@@ -36,6 +50,16 @@ async function syncCharacterCosmetics(
     .update(characters)
     .set({ cosmetics: equipped.map((e) => e.slug) })
     .where(eq(characters.id, characterId));
+}
+
+/** The user's primary wallet address — the payer the SOL rail binds against. */
+async function primaryWallet(
+  ctx: FastifyInstance["ctx"],
+  userId: string,
+): Promise<string | null> {
+  const rows = await ctx.db.select().from(wallets).where(eq(wallets.userId, userId));
+  const primary = rows.find((w) => w.isPrimary) ?? rows[0];
+  return primary?.address ?? null;
 }
 
 export default async function storeModule(app: FastifyInstance): Promise<void> {
@@ -71,9 +95,42 @@ export default async function storeModule(app: FastifyInstance): Promise<void> {
     const item = rows[0];
     if (!item) throw notFound("item not found");
     if (item.priceShiny === null) {
-      throw notImplemented(
-        "SOL-rail premium purchases are not available in beta — SHINY-priced items only",
-      );
+      // SOL-rail cosmetic: build an unsigned-transfer intent (doc 11). When the
+      // rail is unconfigured (beta, no REVENUE_WALLET) it stays a 501 stub so the
+      // SHINY rail is untouched and existing beta store tests keep passing.
+      if (item.priceSol === null) {
+        // Neither SHINY- nor SOL-priced → not purchasable (e.g. pass exclusives).
+        throw badRequest("NOT_PURCHASABLE", "this item is not for sale");
+      }
+      const rail = getSolRail();
+      if (!rail.config.enabled || !rail.config.revenueWallet) {
+        throw notImplemented(
+          "SOL-rail premium purchases are not available in beta — SHINY-priced items only",
+        );
+      }
+      const payer = await primaryWallet(ctx, user.id);
+      if (!payer) throw badRequest("NO_WALLET", "link a primary wallet before SOL purchases");
+      const price = await priceLamports(ctx.db, "cosmetic", itemSlug);
+      const built = await buildSolPayment({
+        payer,
+        product: "cosmetic",
+        ref: price.ref,
+        lamports: price.lamports,
+        revenueWallet: rail.config.revenueWallet,
+        rpc: rail.rpc,
+      });
+      const response: SolBuyResponse = {
+        product: "cosmetic",
+        ref: price.ref,
+        priceSol: price.priceSol,
+        lamports: price.lamports,
+        revenueWallet: rail.config.revenueWallet,
+        reference: built.reference,
+        memo: built.memo,
+        serializedTx: built.serializedTx,
+        expiresAt: built.expiresAt,
+      };
+      return response;
     }
     const balances = await unlockedBalance(ctx.db, ctx.ledger, user.id);
     if (balances.unlocked < item.priceShiny) throw insufficientFunds();
@@ -105,6 +162,109 @@ export default async function storeModule(app: FastifyInstance): Promise<void> {
       .values({ id: purchaseId, userId: user.id, itemSlug })
       .returning();
     return { ok: true, userCosmeticId: inserted[0]!.id };
+  });
+
+  app.post("/store/confirm", async (request) => {
+    const user = requireTos(request);
+    const { txSig, reference } = solConfirmRequest.parse(request.body);
+    const rail = getSolRail();
+    if (!rail.config.enabled || !rail.config.revenueWallet) {
+      throw notImplemented("SOL rail not configured in beta");
+    }
+
+    // Fast idempotent replay: a signature already granted returns without
+    // re-verifying or re-granting (the unique tx_sig is the true arbiter below).
+    const seen = await ctx.db
+      .select()
+      .from(solPayments)
+      .where(eq(solPayments.txSig, txSig))
+      .limit(1);
+    if (seen[0]) {
+      const response: SolConfirmResponse = {
+        granted: true,
+        product: "cosmetic",
+        ref: seen[0].ref,
+        txSig,
+        alreadyGranted: true,
+      };
+      return response;
+    }
+
+    const payer = await primaryWallet(ctx, user.id);
+    if (!payer) throw badRequest("NO_WALLET", "link a primary wallet before SOL purchases");
+
+    // Re-derive the cosmetic slug from the on-chain memo, then re-price it
+    // server-side so the verified lamports bind to the real catalog price — never
+    // to anything the client supplied.
+    const memoRef = await readMemoRef(rail.rpc, txSig);
+    if (!memoRef || memoRef.product !== "cosmetic") {
+      throw badRequest("PAYMENT_UNVERIFIED", "not a cosmetic SOL payment");
+    }
+    if (memoRef.reference !== reference) {
+      throw badRequest("PAYMENT_UNVERIFIED", "reference mismatch");
+    }
+    const price = await priceLamports(ctx.db, "cosmetic", memoRef.ref);
+
+    const result = await verifySolPayment({
+      txSig,
+      reference,
+      expectedPayer: payer,
+      expectedLamports: price.lamports,
+      revenueWallet: rail.config.revenueWallet,
+      rpc: rail.rpc,
+    });
+    if (!result.ok) {
+      throw badRequest("PAYMENT_UNVERIFIED", `SOL payment not verified: ${result.reason}`);
+    }
+
+    // Record the receipt idempotently. The unique tx_sig is the grant arbiter: if
+    // a concurrent confirm already inserted it, we do NOT double-grant.
+    const recorded = await ctx.db
+      .insert(solPayments)
+      .values({
+        txSig,
+        userId: user.id,
+        product: "cosmetic",
+        ref: price.ref,
+        reference,
+        lamports: BigInt(price.lamports),
+      })
+      .onConflictDoNothing({ target: solPayments.txSig })
+      .returning();
+    if (!recorded[0]) {
+      const response: SolConfirmResponse = {
+        granted: true,
+        product: "cosmetic",
+        ref: price.ref,
+        txSig,
+        alreadyGranted: true,
+      };
+      return response;
+    }
+
+    // Atomic supply cap, then grant the cosmetic.
+    const claimed = await ctx.db
+      .update(cosmeticItems)
+      .set({ sold: sql`${cosmeticItems.sold} + 1` })
+      .where(
+        and(
+          eq(cosmeticItems.slug, price.ref),
+          or(isNull(cosmeticItems.supplyCap), sql`${cosmeticItems.sold} < ${cosmeticItems.supplyCap}`),
+        ),
+      )
+      .returning();
+    if (!claimed[0]) throw conflict("SOLD_OUT", "item is sold out");
+
+    await ctx.db.insert(userCosmetics).values({ userId: user.id, itemSlug: price.ref });
+
+    const response: SolConfirmResponse = {
+      granted: true,
+      product: "cosmetic",
+      ref: price.ref,
+      txSig,
+      alreadyGranted: false,
+    };
+    return response;
   });
 
   app.post("/store/equip", async (request) => {

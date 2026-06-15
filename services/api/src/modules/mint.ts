@@ -1,6 +1,7 @@
 /** Mint module: character mint waves (mint = burn), bloodhound population cap. */
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { Queue, type ConnectionOptions } from "bullmq";
 import { POLICY, mintRequest, type MintEvent } from "@trash-wars/shared";
 import { characters, mintEvents, mintOrders } from "@trash-wars/db";
 import { and, eq, gt, ne, sql } from "../core/orm.js";
@@ -10,6 +11,21 @@ import { createCharacter, characterToApi } from "../core/characters.js";
 import { publishFeed, amountBand } from "../core/feed.js";
 import { resolveTier } from "../core/tiers.js";
 import { complianceGate, requireNotFrozen, requireTos } from "./session.js";
+
+const MINT_QUEUE = "mint-character";
+
+/** Lazily-built BullMQ queue for enqueuing on-chain mint fulfillment (non-beta). */
+function bullConnection(redisUrl: string): ConnectionOptions {
+  const u = new URL(redisUrl);
+  return {
+    host: u.hostname,
+    port: Number(u.port || 6379),
+    username: u.username || undefined,
+    password: u.password || undefined,
+    db: Number(u.pathname.replace("/", "") || 0),
+    maxRetriesPerRequest: null,
+  };
+}
 
 type MintEventRow = typeof mintEvents.$inferSelect;
 
@@ -37,6 +53,16 @@ async function bloodhoundCapReached(ctx: FastifyInstance["ctx"]): Promise<boolea
 
 export default async function mintModule(app: FastifyInstance): Promise<void> {
   const ctx = app.ctx;
+
+  // Non-beta with Redis: enqueue on-chain mint fulfillment to the worker. Built
+  // once and closed on app shutdown. Beta never touches Redis.
+  const useQueue = !ctx.env.beta && Boolean(ctx.env.redisUrl);
+  const mintQueue = useQueue ? new Queue(MINT_QUEUE, { connection: bullConnection(ctx.env.redisUrl!) }) : null;
+  if (mintQueue) {
+    app.addHook("onClose", async () => {
+      await mintQueue.close();
+    });
+  }
 
   app.get("/game/mint-events", async () => {
     const rows = await ctx.db.select().from(mintEvents);
@@ -111,17 +137,34 @@ export default async function mintModule(app: FastifyInstance): Promise<void> {
       { idempotencyKey: `mint:${orderId}`, refType: "mint", refId: orderId },
     );
 
+    // Beta (or no Redis): inline stub mint, character gets its asset id instantly
+    // and the order is fulfilled in-band (unchanged behavior — all mint tests).
+    // Non-beta + Redis: create the character WITHOUT a chain call and enqueue the
+    // worker to mint on-chain; the order stays `pending` until the worker fulfills.
     const character = await createCharacter(ctx, {
       ownerUserId: user.id,
       faction: event.faction,
       dnaSeed: orderId,
       bonusPoints: 2,
-      mintNft: true,
+      mintNft: !mintQueue,
     });
-    await ctx.db
-      .update(mintOrders)
-      .set({ state: "fulfilled", characterId: character.id })
-      .where(eq(mintOrders.id, orderId));
+
+    if (mintQueue) {
+      await ctx.db
+        .update(mintOrders)
+        .set({ characterId: character.id })
+        .where(eq(mintOrders.id, orderId));
+      await mintQueue.add(
+        "fulfill",
+        { orderId },
+        { jobId: `mint:${orderId}`, attempts: 5, backoff: { type: "exponential", delay: 5_000 }, removeOnComplete: 100 },
+      );
+    } else {
+      await ctx.db
+        .update(mintOrders)
+        .set({ state: "fulfilled", characterId: character.id })
+        .where(eq(mintOrders.id, orderId));
+    }
 
     await publishFeed(ctx, {
       type: "mint",
@@ -132,6 +175,11 @@ export default async function mintModule(app: FastifyInstance): Promise<void> {
           : `🦝 fresh paws in town — ${character.name} crawled out of the sewers`,
     });
 
-    return { ok: true, orderId, character: characterToApi(character) };
+    return {
+      ok: true,
+      orderId,
+      character: characterToApi(character),
+      fulfilling: Boolean(mintQueue),
+    };
   });
 }

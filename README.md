@@ -104,6 +104,27 @@ revealed and the **/verify** page recomputes everything client-side.
 pnpm -r typecheck && pnpm -r test    # strict TS everywhere; ledger/economy/engine test suites
 ```
 
+## 🚀 Deploy
+
+Production deployment + ops configuration lives in [`ops/deploy/`](ops/deploy/README.md):
+
+| Concern | Where |
+|---|---|
+| Topology, launch-day sequence, pre-flight checklist | [`ops/deploy/README.md`](ops/deploy/README.md) |
+| Fly.io app configs (api + worker) | [`ops/deploy/fly/`](ops/deploy/fly/) |
+| Railway alternative | [`ops/deploy/railway/README.md`](ops/deploy/railway/README.md) |
+| Web (Vercel) | [`apps/web/vercel.json`](apps/web/vercel.json) |
+| Container images | `services/{api,worker}/Dockerfile`, `.dockerignore` |
+| Gated deploy workflow | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
+| Prod env reference | [`.env.production.example`](.env.production.example) |
+| Secrets & custody · Runbooks · Monitoring | [`docs/ops/`](docs/ops/) |
+
+**Topology:** `apps/web` → Vercel · `services/api` (Fastify :4000) + `services/worker`
+(BullMQ, holds signing keys) + Postgres 16 + Redis 7 → Fly.io (or Railway) · Helius for
+RPC + deposit webhooks · Squads 3-of-5 multisig for the 700M emissions reserve. The api is
+public and chain-read-only; the **worker is the only process holding hot-wallet / mint keys**
+(doc 05). Prod runs `BETA_MODE=0` (real Postgres + Redis + chain); beta is zero-infra.
+
 ## ⚠️ Status
 
 **Open beta / pre-TGE.** Beta balances are play-money. Mainnet custody (Squads multisig,

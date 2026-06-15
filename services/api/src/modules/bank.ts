@@ -26,6 +26,102 @@ import { resolveTier } from "../core/tiers.js";
 import { utcDayKey } from "../core/time.js";
 import { complianceGate, requireNotFrozen, requireTos } from "./session.js";
 
+const SHINY_DECIMALS = 6;
+
+interface ParsedDeposit {
+  txSig: string;
+  amount: bigint; // base units
+  memo: string | null;
+}
+
+/**
+ * Parse a Helius webhook body into SHINY deposits credited to the deposit
+ * address owner. Supports the "enhanced" shape (array of objects with
+ * tokenTransfers[]) and a raw fallback (flat {signature, amount, memo}).
+ *
+ * For each SPL transfer where mint == SHINY_MINT and the destination owner
+ * (toUserAccount) == depositAddress, we read the transaction memo and emit one
+ * ParsedDeposit. Amounts come from rawTokenAmount (base units) when present,
+ * else the decimal tokenAmount scaled by SHINY_DECIMALS.
+ */
+export function parseHeliusDeposits(
+  body: unknown,
+  shinyMint: string | undefined,
+  depositAddress: string,
+): ParsedDeposit[] {
+  if (!Array.isArray(body)) return [];
+  const out: ParsedDeposit[] = [];
+
+  for (const raw of body as Array<Record<string, unknown>>) {
+    const txSig = String(raw.signature ?? "");
+    if (!txSig) continue;
+    const memo = extractMemo(raw);
+
+    const tokenTransfers = raw.tokenTransfers;
+    if (Array.isArray(tokenTransfers) && tokenTransfers.length > 0) {
+      // Enhanced shape.
+      for (const tr of tokenTransfers as Array<Record<string, unknown>>) {
+        const mint = String(tr.mint ?? "");
+        const to = String(tr.toUserAccount ?? tr.toTokenAccount ?? "");
+        if (shinyMint && mint !== shinyMint) continue;
+        if (to !== depositAddress) continue;
+        const amount = transferAmount(tr);
+        if (amount <= 0n) continue;
+        out.push({ txSig, amount, memo });
+      }
+    } else {
+      // Raw fallback: flat {signature, amount, memo, mint?, destination?}.
+      const mint = raw.mint ? String(raw.mint) : null;
+      const dest = raw.destination ? String(raw.destination) : null;
+      if (shinyMint && mint && mint !== shinyMint) continue;
+      if (dest && dest !== depositAddress) continue;
+      const amount = BigInt(String(raw.amount ?? "0"));
+      if (amount <= 0n) continue;
+      out.push({ txSig, amount, memo });
+    }
+  }
+  return out;
+}
+
+/** Base-unit amount from a Helius enhanced tokenTransfer leg. */
+function transferAmount(tr: Record<string, unknown>): bigint {
+  const rawAmt = tr.rawTokenAmount as Record<string, unknown> | undefined;
+  if (rawAmt && rawAmt.tokenAmount !== undefined) {
+    return BigInt(String(rawAmt.tokenAmount));
+  }
+  // tokenAmount is a UI (decimal) amount — scale by SHINY_DECIMALS.
+  const ui = tr.tokenAmount;
+  if (ui === undefined) return 0n;
+  return uiToBaseUnits(String(ui), SHINY_DECIMALS);
+}
+
+/** Convert a decimal-string token amount to base units without floats. */
+function uiToBaseUnits(ui: string, decimals: number): bigint {
+  const neg = ui.startsWith("-");
+  const clean = neg ? ui.slice(1) : ui;
+  const [whole, frac = ""] = clean.split(".");
+  const fracPadded = (frac + "0".repeat(decimals)).slice(0, decimals);
+  const base = BigInt(whole || "0") * 10n ** BigInt(decimals) + BigInt(fracPadded || "0");
+  return neg ? -base : base;
+}
+
+/** Pull the memo from Helius enhanced fields (instructions / description). */
+function extractMemo(raw: Record<string, unknown>): string | null {
+  // Top-level convenience field if the relayer attaches one.
+  if (typeof raw.memo === "string" && raw.memo.length > 0) return raw.memo;
+  // Memo-program instruction (parsed) — scan instructions for the memo program.
+  const instructions = raw.instructions;
+  if (Array.isArray(instructions)) {
+    for (const ix of instructions as Array<Record<string, unknown>>) {
+      const programId = String(ix.programId ?? "");
+      if (programId === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" && typeof ix.data === "string") {
+        return ix.data;
+      }
+    }
+  }
+  return null;
+}
+
 function withdrawalToApi(w: typeof withdrawals.$inferSelect): Withdrawal {
   return {
     id: w.id,
@@ -93,41 +189,50 @@ export default async function bankModule(app: FastifyInstance): Promise<void> {
     if (!ctx.env.heliusWebhookSecret || auth !== ctx.env.heliusWebhookSecret) {
       throw unauthorized("bad webhook secret");
     }
-    // REAL-mode skeleton: idempotent on tx_sig; finalized transfers with a known memo
-    // credit the user. Full Helius payload parsing lands with the Solana provider.
-    const events = Array.isArray(request.body) ? request.body : [];
+
+    // Parse the Helius payload into our SHINY-deposit shape (enhanced + raw fallback).
+    const transfers = parseHeliusDeposits(request.body, ctx.env.shinyMint, ctx.env.depositAddress);
     let credited = 0;
-    for (const event of events as Array<Record<string, unknown>>) {
-      const txSig = String(event.signature ?? "");
-      const amount = BigInt(String(event.amount ?? "0"));
-      const memo = event.memo ? String(event.memo) : null;
-      if (!txSig || amount <= 0n) continue;
-      const memoRow = memo
-        ? (await ctx.db.select().from(depositMemos).where(eq(depositMemos.memo, memo)).limit(1))[0]
+    let unattributed = 0;
+
+    for (const t of transfers) {
+      // Look up the memo → user. Memo-less / unknown memos land 'unattributed'.
+      const memoRow = t.memo
+        ? (await ctx.db.select().from(depositMemos).where(eq(depositMemos.memo, t.memo)).limit(1))[0]
         : undefined;
+
+      // Insert keyed by tx signature — UNIQUE makes redelivery idempotent (a 5×
+      // replay credits exactly once: only the first insert returns a row).
       const inserted = await ctx.db
         .insert(deposits)
         .values({
           userId: memoRow?.userId ?? null,
-          txSig,
-          amount,
+          txSig: t.txSig,
+          amount: t.amount,
           state: memoRow ? "credited" : "unattributed",
-          memo,
+          memo: t.memo,
         })
         .onConflictDoNothing({ target: deposits.txSig })
         .returning();
-      if (!inserted[0] || !memoRow) continue;
+      if (!inserted[0]) continue; // already processed this signature
+
+      if (!memoRow) {
+        unattributed += 1;
+        continue; // admin assigns later; no ledger credit
+      }
+
+      // Finalized SHINY in → mirror balance moves into the user's game balance.
       const account = await getUserAccount(ctx.ledger, memoRow.userId);
       await ctx.ledger.postTransaction(
         [
-          { accountId: ctx.accounts.onchain_reserve_mirror, delta: -amount },
-          { accountId: account, delta: amount },
+          { accountId: ctx.accounts.onchain_reserve_mirror, delta: -t.amount },
+          { accountId: account, delta: t.amount },
         ],
-        { idempotencyKey: `deposit:${txSig}`, refType: "deposit", refId: txSig },
+        { idempotencyKey: `deposit:${t.txSig}`, refType: "deposit", refId: t.txSig },
       );
       credited += 1;
     }
-    return reply.send({ ok: true, credited });
+    return reply.send({ ok: true, credited, unattributed });
   });
 
   app.post("/bank/withdraw", async (request) => {

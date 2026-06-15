@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.2 — Launch readiness: real custody, NFTs, SOL rail, art studio, infra (2026-06-15)
+
+Closes the gap between the devnet beta and mainnet custody of real funds.
+
+### Added
+- **Real on-chain custody** (services/worker): `SolanaChainProvider` (the API never
+  holds keys) — spl-token `transferChecked` withdrawal payouts + `burnChecked` weekly
+  burns, hot-wallet runway preflight with auto-pause + incident, idempotent ledger legs
+  posted only after a confirmed signature.
+- **NFT minting** (Metaplex Core): mpl-core mint into the collection with Attributes +
+  PermanentFreeze + PermanentBurn plugins; BullMQ mint-fulfillment job reads the art
+  manifest for uri + stat bands; death → on-chain burn; in-wallet staking via freeze.
+- **Real deposits**: Helius webhook parser (secret auth, enhanced + raw payloads,
+  SHINY-mint filter, memo→user, tx-sig idempotent credit at finalized).
+- **SOL payment rail**: Season Pass premium + premium cosmetics via real SOL — server
+  builds an unsigned transfer with a memo reference, `/confirm` verifies the finalized
+  tx (exact lamports, correct payer, memo) and grants idempotently (`sol_payments` table).
+  Never touches $SHINY.
+- **Art & content studio** (ops/art): deterministic code-drawn generative NFT collection
+  (trait layers → 2048px PNG → Metaplex metadata → manifest → Irys upload), marketing
+  card generator (hero/teaser/faction/Most-Wanted/burn/stats/vault), rarity report.
+  FLUX/diffusion is a documented insertion point behind FAL_KEY.
+- **In-game art** upgrade (richer avatars + atmospheric city) and a beefed-up Sentinel
+  (more noir voice, mint/faction-war events, image-card attachments).
+- **Production infra**: api + worker Dockerfiles, Fly/Railway/Vercel configs, a gated
+  deploy workflow with the sim-regression preflight, and SECRETS/RUNBOOKS/MONITORING docs.
+
+### Notes
+- Beta (`BETA_MODE=1`) is unchanged and fully stubbed; all 191 tests green, both web
+  builds pass, sims in band.
+- mpl-core + Irys + live-RPC tx verification are marked UNVERIFIED pending a devnet
+  rehearsal (no funded key in the build env) — see DECISIONS.md.
+
 ## v1.1 — Launch-scope amendments (2026-06-10)
 
 Reconciliation of the in-flight build with docs/14 (audit-first, per the amendment process).

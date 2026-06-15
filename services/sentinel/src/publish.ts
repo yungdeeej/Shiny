@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { StoryEvent } from "./consume.js";
 import type { DraftPost } from "./voice.js";
+import { buildCardSvg, cardCopyFor, writeCard } from "./card.js";
 
 // services/sentinel/src → repo root → ops/sentinel-out (gitignored via ops/.gitignore)
 export const OUT_DIR =
@@ -22,25 +23,50 @@ export const OUT_DIR =
 export interface WrittenDraft {
   jsonPath: string;
   mdPath: string;
+  cardPath: string | null;
 }
 
-export function writeDraft(evt: StoryEvent, post: DraftPost, imageNote: string): WrittenDraft {
+/**
+ * Render a noir attachment card for the draft (always .svg; .png when sharp is
+ * importable). This is the in-house card generator — the polished marketing
+ * variants live in ops/art (gen:marketing). Non-fatal on failure.
+ */
+export async function attachCard(evt: StoryEvent, post: DraftPost, baseName: string): Promise<{ path: string | null; note: string }> {
+  try {
+    const svg = buildCardSvg(evt, cardCopyFor(evt, post.headline));
+    const card = await writeCard(OUT_DIR, baseName, svg);
+    return { path: card.pngPath ?? card.svgPath, note: card.note };
+  } catch (err) {
+    return { path: null, note: `card render failed (non-fatal): ${String(err)}` };
+  }
+}
+
+export async function writeDraft(
+  evt: StoryEvent,
+  post: DraftPost,
+  imageNote: string,
+): Promise<WrittenDraft> {
   mkdirSync(OUT_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const base = path.join(OUT_DIR, `${stamp}-${evt.kind}`);
+  const baseName = `${stamp}-${evt.kind}`;
+  const base = path.join(OUT_DIR, baseName);
+
+  const card = await attachCard(evt, post, baseName);
 
   const jsonPath = `${base}.json`;
-  writeFileSync(jsonPath, JSON.stringify({ event: evt, post, imageNote }, null, 2) + "\n");
+  writeFileSync(jsonPath, JSON.stringify({ event: evt, post, imageNote, card: card.path }, null, 2) + "\n");
 
   const mdPath = `${base}.md`;
+  const cardLine = card.path ? `**Card:** ${path.basename(card.path)} (${card.note})\n\n` : `**Card:** ${card.note}\n\n`;
   writeFileSync(
     mdPath,
-    `# ${post.headline}\n\n${post.story}\n\n---\n\n` +
-      `**Image prompt:** ${post.imagePrompt}\n\n` +
-      `**Image:** ${imageNote}\n\n` +
+    `# ${post.headline}\n\n${post.story}\n\n> ${post.pullQuote}\n\n---\n\n` +
+      cardLine +
+      `**Image prompt (diffusion):** ${post.imagePrompt}\n\n` +
+      `**Diffusion image:** ${imageNote}\n\n` +
       `_generator: ${post.generator} · event: ${evt.kind} (${evt.sourceId}) · ${evt.at}_\n`,
   );
-  return { jsonPath, mdPath };
+  return { jsonPath, mdPath, cardPath: card.path };
 }
 
 /**

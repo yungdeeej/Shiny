@@ -1,0 +1,5 @@
+# Generated collections + marketing renders (large PNGs, not source of truth).
+out/
+
+# But DO keep the curated showcase shots so the team sees quality in the repo.
+!showcase/

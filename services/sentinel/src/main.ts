@@ -76,7 +76,7 @@ async function cycle(): Promise<void> {
     try {
       const post = await draftPost(story);
       const imageNote = await maybeGenerateImage(post.imagePrompt);
-      const written = writeDraft(story, post, imageNote);
+      const written = await writeDraft(story, post, imageNote);
       publishDraft(written);
       recordPost(state, story);
       console.log(`drafted [${post.generator}] ${story.kind}: ${post.headline}`);

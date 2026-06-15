@@ -457,6 +457,18 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     CONSTRAINT "raffle_weekly_grants_user_week_uq" UNIQUE ("user_id", "week")
   )`,
 
+  /* ── SOL payment rail (doc 11 §SOL): off-ledger receipts, idempotent on tx_sig ── */
+  `CREATE TABLE IF NOT EXISTS "sol_payments" (
+    "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "tx_sig" text NOT NULL UNIQUE,
+    "user_id" uuid NOT NULL REFERENCES "users"("id"),
+    "product" text NOT NULL,
+    "ref" text NOT NULL,
+    "reference" text NOT NULL,
+    "lamports" bigint NOT NULL,
+    "created_at" timestamptz NOT NULL DEFAULT now()
+  )`,
+
   `CREATE TABLE IF NOT EXISTS "feed_events" (
     "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     "type" text NOT NULL,

@@ -383,9 +383,17 @@ export function CityMap({ locations, activeMissions, now, onSelect, jackpot }: C
           <filter id="blurSm">
             <feGaussianBlur stdDeviation="4" />
           </filter>
+          <filter id="blurFar">
+            <feGaussianBlur stdDeviation="2.5" />
+          </filter>
           <mask id="reflectionMask">
             <rect x="0" y="690" width="1200" height="110" fill="url(#reflectionFade)" />
           </mask>
+          {/* atmospheric haze that lifts off the street, deepening the parallax */}
+          <linearGradient id="haze" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#1a2440" stopOpacity="0" />
+            <stop offset="100%" stopColor="#1a2440" stopOpacity="0.5" />
+          </linearGradient>
         </defs>
 
         <rect width="1200" height="800" fill="url(#sky)" />
@@ -396,6 +404,14 @@ export function CityMap({ locations, activeMissions, now, onSelect, jackpot }: C
         <ellipse cx="380" cy="90" rx="120" ry="16" fill="#1a2235" opacity="0.7" />
         <ellipse cx="980" cy="140" rx="150" ry="18" fill="#1a2235" opacity="0.6" />
         <ellipse cx="620" cy="60" rx="90" ry="12" fill="#161e30" opacity="0.8" />
+
+        {/* deepest parallax — hazy far towers, blurred to push them back */}
+        <g fill="#0e1526" opacity="0.7" filter="url(#blurFar)">
+          <rect x="40" y="380" width="50" height="310" /><rect x="120" y="340" width="64" height="350" />
+          <rect x="230" y="400" width="48" height="290" /><rect x="330" y="360" width="80" height="330" />
+          <rect x="520" y="350" width="56" height="340" /><rect x="700" y="330" width="60" height="360" />
+          <rect x="820" y="380" width="50" height="310" /><rect x="1050" y="360" width="70" height="330" />
+        </g>
 
         {/* skyline depth layers */}
         <g fill="#10172a" opacity="0.9">
@@ -416,9 +432,24 @@ export function CityMap({ locations, activeMissions, now, onSelect, jackpot }: C
         <Windows x={390} y={260} w={62} h={120} cols={2} rows={5} seed="win:bg2" lit={0.2} color="#7d8db0" />
         <Windows x={910} y={270} w={70} h={120} cols={3} rows={5} seed="win:bg3" lit={0.18} color="#7d8db0" />
 
+        {/* low haze drifting between the skyline and the street — air + depth */}
+        <rect x="0" y="430" width="1200" height="260" fill="url(#haze)" opacity="0.65" />
+        {/* a couple of cold neon spill-lights bouncing off the haze (flicker respects reduced-motion via CSS class) */}
+        <g opacity="0.5">
+          <ellipse cx="250" cy="560" rx="120" ry="36" fill="#4D9DE0" opacity="0.12" className={reduced ? undefined : "animate-flicker"} />
+          <ellipse cx="980" cy="540" rx="140" ry="40" fill="#C792EA" opacity="0.1" className={reduced ? undefined : "animate-flicker"} style={reduced ? undefined : { animationDelay: "2.2s" }} />
+        </g>
+
         {/* street */}
         <rect x="0" y="690" width="1200" height="110" fill="url(#street)" />
         <line x1="0" y1="690" x2="1200" y2="690" stroke="#0a0d13" strokeWidth="3" />
+        {/* wet-asphalt sheen + vertical neon smears bleeding down the road */}
+        <g opacity="0.5" filter="url(#blurSm)">
+          <rect x="150" y="692" width="40" height="100" fill="#4D9DE0" opacity="0.1" />
+          <rect x="470" y="692" width="50" height="100" fill="#FFB627" opacity="0.1" />
+          <rect x="780" y="692" width="44" height="100" fill="#3DDC97" opacity="0.08" />
+          <rect x="1010" y="692" width="60" height="100" fill="#C792EA" opacity="0.1" />
+        </g>
         <g stroke="#2a3346" strokeWidth="3" strokeDasharray="26 30" opacity="0.5">
           <line x1="0" y1="748" x2="1200" y2="748" />
         </g>

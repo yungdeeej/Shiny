@@ -1,0 +1,109 @@
+name: Deploy
+
+# Manual, gated production/staging deploy of the api + worker to Fly.io.
+# Separate from ci.yml (which runs typecheck/test/sim on every push).
+#
+# - web deploys via Vercel's own Git integration (we document, not duplicate it).
+# - This workflow is INERT-SAFE: if FLY_API_TOKEN is absent it no-ops with a
+#   notice instead of failing, so a fork/clone without secrets stays green.
+# - The chosen `environment` (staging|prod) is a GitHub Environment — attach a
+#   required-reviewers protection rule there to gate prod behind manual approval.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        required: true
+        options:
+          - staging
+          - prod
+        default: staging
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Pre-deploy guard: full gates + the economy-sim regression bands. ───────
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm -r typecheck
+      - name: Test
+        run: pnpm -r test
+      - name: Economy sim regression gate
+        run: node ops/check-sim-bands.mjs
+
+  # ── Deploy api + worker to Fly. Gated by the GitHub Environment. ───────────
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Fly token
+        id: gate
+        run: |
+          if [ -n "${{ secrets.FLY_API_TOKEN }}" ]; then
+            echo "have_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_token=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::FLY_API_TOKEN not set — skipping deploy (inert run)."
+          fi
+
+      - name: Setup flyctl
+        if: steps.gate.outputs.have_token == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Build context is the repo root; the toml's [build].dockerfile points at
+      # services/<svc>/Dockerfile. --remote-only builds on Fly's builders.
+      - name: Deploy API
+        if: steps.gate.outputs.have_token == 'true'
+        run: flyctl deploy --remote-only -c ops/deploy/fly/api.fly.toml
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Deploy Worker
+        if: steps.gate.outputs.have_token == 'true'
+        run: flyctl deploy --remote-only -c ops/deploy/fly/worker.fly.toml
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Smoke test /health
+        if: steps.gate.outputs.have_token == 'true'
+        run: |
+          # Best-effort post-deploy probe. Set API_HEALTH_URL as an Environment
+          # variable (e.g. https://trash-wars-api.fly.dev/health) to enable.
+          URL="${{ vars.API_HEALTH_URL }}"
+          if [ -z "$URL" ]; then
+            echo "::notice::API_HEALTH_URL not set — skipping smoke test."
+            exit 0
+          fi
+          for i in 1 2 3 4 5; do
+            if curl -fsS "$URL" | grep -q '"ok":true'; then
+              echo "health ok"; exit 0
+            fi
+            echo "attempt $i: not healthy yet"; sleep 10
+          done
+          echo "::error::/health did not return ok after deploy"; exit 1
+
+  # web is intentionally NOT deployed here — Vercel's Git integration owns it.
+  note-web:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::notice::apps/web deploys via Vercel's Git integration."
+          echo "::notice::Promote the matching Vercel deployment for ${{ github.event.inputs.environment }} (DEMO_MODE=0 for devnet/prod)."

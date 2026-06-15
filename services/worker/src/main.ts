@@ -1,7 +1,10 @@
 /**
- * Trash Wars worker — thin BullMQ shell around the SAME tick functions the API's
- * in-process scheduler runs (@trash-wars/api/core). Requires REDIS_URL; without it
- * the API schedules everything itself and this process is unnecessary.
+ * Trash Wars worker — BullMQ shell around the SAME tick functions the API's
+ * in-process scheduler runs, PLUS the on-chain signing path (the API never
+ * signs). Requires REDIS_URL. When the custody keys are configured the worker
+ * injects the real SolanaChainProvider so withdrawal payouts, the weekly burn
+ * and character mints sign for real; otherwise it keeps today's stub/devnet-sim
+ * behavior and warns once (never crashes the beta worker).
  */
 import { Queue, Worker, type ConnectionOptions } from "bullmq";
 import {
@@ -10,12 +13,32 @@ import {
   loadEnv,
   buildContext,
   bootstrap,
+  type AppContext,
   type TickName,
 } from "@trash-wars/api/core";
 import { auditLog } from "@trash-wars/db";
+import type { ChainProvider } from "@trash-wars/chain";
+import { hasSigningConfig, createSolanaChainProvider } from "./chain/config.js";
+import { loadManifest, type Manifest } from "./chain/manifest.js";
+import { fulfillMintOrder } from "./jobs/mint-character.js";
+import { runWithdrawalPayouts } from "./jobs/withdrawals.js";
+import { executeWeeklyBurn } from "./jobs/weekly-burn.js";
 
 const QUEUE = "trash-wars-ticks";
+const MINT_QUEUE = "mint-character";
 const HEARTBEAT_JOB = "heartbeat";
+const WEEKLY_BURN_JOB = "execute-weekly-burn";
+
+function chainEnv() {
+  return {
+    SOLANA_RPC_URL: process.env.SOLANA_RPC_URL,
+    SHINY_MINT: process.env.SHINY_MINT,
+    HOT_WALLET_KEYPAIR_PATH: process.env.HOT_WALLET_KEYPAIR_PATH,
+    MINT_AUTHORITY_KEYPAIR_PATH: process.env.MINT_AUTHORITY_KEYPAIR_PATH,
+    CORE_COLLECTION_ADDRESS: process.env.CORE_COLLECTION_ADDRESS,
+    PRIORITY_FEE_MICROLAMPORTS: process.env.PRIORITY_FEE_MICROLAMPORTS,
+  };
+}
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -27,12 +50,42 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const ctx = await buildContext(env);
-  await bootstrap(ctx);
-  ctx.log.info("worker context ready");
+  // Build the real signing provider iff custody keys are configured. On any
+  // construction error, warn and fall back — never crash the worker.
+  let chainOverride: ChainProvider | undefined;
+  if (hasSigningConfig(chainEnv())) {
+    try {
+      chainOverride = createSolanaChainProvider(chainEnv());
+    } catch (err) {
+      console.error(
+        `worker: signing keys present but provider construction failed — falling back to default provider. ${String(err)}`,
+      );
+    }
+  }
 
-  // Plain options object (not an ioredis instance) so BullMQ's bundled ioredis
-  // typings never clash with this package's own ioredis version.
+  const ctx = await buildContext(env, { chainOverride });
+  await bootstrap(ctx);
+  ctx.log.info(
+    { provider: ctx.chain.cluster, signing: Boolean(chainOverride) },
+    chainOverride
+      ? "worker context ready — REAL signing provider active"
+      : "worker context ready — stub/devnet-sim provider (no custody keys)",
+  );
+
+  // Load the character art manifest once (optional — placeholder mints if absent).
+  let manifest: Manifest | undefined;
+  if (env.characterManifestPath) {
+    try {
+      manifest = await loadManifest(env.characterManifestPath);
+      ctx.log.info(
+        { assets: manifest.assets.length, collection: manifest.collection.name },
+        "character manifest loaded",
+      );
+    } catch (err) {
+      ctx.log.warn({ err: String(err) }, "character manifest failed to load — placeholder mints");
+    }
+  }
+
   const redisUrl = new URL(env.redisUrl);
   const connection: ConnectionOptions = {
     host: redisUrl.hostname,
@@ -43,6 +96,7 @@ async function main(): Promise<void> {
     maxRetriesPerRequest: null,
   };
   const queue = new Queue(QUEUE, { connection });
+  const mintQueue = new Queue(MINT_QUEUE, { connection });
 
   // Repeatable jobs: one per tick, same cadence as the in-process scheduler.
   const intervals = tickIntervalsMs(env);
@@ -61,7 +115,18 @@ async function main(): Promise<void> {
     removeOnFail: 10,
   });
 
-  const worker = new Worker(
+  // Weekly burn: Sunday 16:00 UTC (doc 09). Only in prod (non-beta) — beta keeps
+  // burns purely in-ledger.
+  if (!env.beta) {
+    await queue.add(WEEKLY_BURN_JOB, {}, {
+      repeat: { pattern: "0 16 * * 0", tz: "UTC" },
+      jobId: `tick:${WEEKLY_BURN_JOB}`,
+      removeOnComplete: 20,
+      removeOnFail: 20,
+    });
+  }
+
+  const ticksWorker = new Worker(
     QUEUE,
     async (job) => {
       if (job.name === HEARTBEAT_JOB) {
@@ -70,6 +135,15 @@ async function main(): Promise<void> {
           action: "heartbeat",
           detail: { at: new Date().toISOString() },
         });
+        return;
+      }
+      if (job.name === WEEKLY_BURN_JOB) {
+        await executeWeeklyBurn(ctx, { discordWebhookUrl: env.discordAdminWebhookUrl });
+        return;
+      }
+      // The withdrawal payout tick gets the worker's custody preflight wrapper.
+      if (job.name === ("withdrawals" satisfies TickName)) {
+        await runWithdrawalPayouts(ctx, { discordWebhookUrl: env.discordAdminWebhookUrl });
         return;
       }
       const tick = TICKS[job.name as TickName];
@@ -82,24 +156,46 @@ async function main(): Promise<void> {
     { connection, concurrency: 1 },
   );
 
-  worker.on("failed", (job, err) => {
+  // Mint fulfillment worker: serial per process, retries on failure (the API
+  // already burned the $SHINY, so failures park as failed_retry — never refund).
+  const mintWorker = new Worker(
+    MINT_QUEUE,
+    async (job) => {
+      const orderId = String((job.data as { orderId?: string }).orderId ?? "");
+      if (!orderId) throw new Error("mint job missing orderId");
+      await fulfillMintOrder(ctx, orderId, { manifest });
+    },
+    { connection, concurrency: 1 },
+  );
+
+  ticksWorker.on("failed", (job, err) => {
     ctx.log.error({ err, job: job?.name }, "tick job failed");
+  });
+  mintWorker.on("failed", (job, err) => {
+    ctx.log.error({ err, job: job?.id }, "mint fulfillment job failed (will retry)");
   });
 
   const shutdown = async () => {
     ctx.log.info("worker shutting down");
-    await worker.close();
+    await ticksWorker.close();
+    await mintWorker.close();
     await queue.close();
+    await mintQueue.close();
     await ctx.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  ctx.log.info({ queue: QUEUE }, "worker online — ticks registered");
+  ctx.log.info({ queue: QUEUE, mintQueue: MINT_QUEUE }, "worker online — ticks + mint queue registered");
 }
 
 main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
+/** Exposed for the API to enqueue mint jobs (same queue name + connection). */
+export { MINT_QUEUE };
+/** Re-export for tests/consumers that want the context type. */
+export type { AppContext };

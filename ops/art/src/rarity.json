@@ -1,0 +1,92 @@
+{
+  "_doc": "Weighted rarity per trait option (higher weight = more common). Per-option `score` (0..1) feeds rarityTier: rarer combined picks → epic/legendary. Rarity sets base-stat BANDS only, never odds (doc 07).",
+  "raccoon": {
+    "background": {
+      "alley":      { "weight": 40, "score": 0.0 },
+      "neon-rain":  { "weight": 32, "score": 0.25 },
+      "rooftop":    { "weight": 20, "score": 0.5 },
+      "vault-glow": { "weight": 8,  "score": 0.9 }
+    },
+    "fur": {
+      "ash-grey":     { "weight": 30, "score": 0.0 },
+      "gutter-brown": { "weight": 28, "score": 0.1 },
+      "smoke":        { "weight": 22, "score": 0.2 },
+      "slate-blue":   { "weight": 14, "score": 0.5 },
+      "rust-grey":    { "weight": 6,  "score": 0.85 }
+    },
+    "neckwear": {
+      "none":          { "weight": 44, "score": 0.0 },
+      "trench-collar": { "weight": 30, "score": 0.4 },
+      "scarf":         { "weight": 18, "score": 0.5 },
+      "chain":         { "weight": 8,  "score": 0.9 }
+    },
+    "expression": {
+      "smirk":   { "weight": 36, "score": 0.1 },
+      "deadpan": { "weight": 30, "score": 0.2 },
+      "grit":    { "weight": 22, "score": 0.45 },
+      "grin":    { "weight": 12, "score": 0.7 }
+    },
+    "eyes": {
+      "sly":         { "weight": 40, "score": 0.1 },
+      "wide":        { "weight": 30, "score": 0.2 },
+      "scarred":     { "weight": 22, "score": 0.55 },
+      "visor-glint": { "weight": 8,  "score": 0.95 }
+    },
+    "headwear": {
+      "none":   { "weight": 30, "score": 0.0 },
+      "beanie": { "weight": 22, "score": 0.3 },
+      "cap":    { "weight": 20, "score": 0.3 },
+      "fedora": { "weight": 16, "score": 0.55 },
+      "durag":  { "weight": 9,  "score": 0.7 },
+      "crown":  { "weight": 3,  "score": 1.0 }
+    },
+    "accessory": {
+      "none":     { "weight": 40, "score": 0.0 },
+      "lockpick": { "weight": 22, "score": 0.4 },
+      "coin":     { "weight": 18, "score": 0.45 },
+      "cigar":    { "weight": 14, "score": 0.6 },
+      "pigeon":   { "weight": 6,  "score": 0.9 }
+    }
+  },
+  "bloodhound": {
+    "background": {
+      "precinct":  { "weight": 46, "score": 0.0 },
+      "rain":      { "weight": 34, "score": 0.3 },
+      "spotlight": { "weight": 20, "score": 0.7 }
+    },
+    "coat": {
+      "tan":      { "weight": 36, "score": 0.0 },
+      "chestnut": { "weight": 30, "score": 0.15 },
+      "honey":    { "weight": 22, "score": 0.4 },
+      "liver":    { "weight": 12, "score": 0.75 }
+    },
+    "collar": {
+      "patrol":     { "weight": 48, "score": 0.0 },
+      "sergeant":   { "weight": 30, "score": 0.4 },
+      "lieutenant": { "weight": 16, "score": 0.7 },
+      "captain":    { "weight": 6,  "score": 1.0 }
+    },
+    "ears": {
+      "long":  { "weight": 50, "score": 0.1 },
+      "short": { "weight": 34, "score": 0.3 },
+      "torn":  { "weight": 16, "score": 0.7 }
+    },
+    "jowls": {
+      "heavy": { "weight": 60, "score": 0.1 },
+      "trim":  { "weight": 40, "score": 0.4 }
+    },
+    "expression": {
+      "stern": { "weight": 48, "score": 0.1 },
+      "snarl": { "weight": 32, "score": 0.45 },
+      "pant":  { "weight": 20, "score": 0.55 }
+    },
+    "eyes": {
+      "droopy": { "weight": 58, "score": 0.1 },
+      "sharp":  { "weight": 42, "score": 0.5 }
+    },
+    "headwear": {
+      "none":        { "weight": 55, "score": 0.0 },
+      "police-cap":  { "weight": 45, "score": 0.45 }
+    }
+  }
+}

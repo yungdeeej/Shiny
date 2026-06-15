@@ -635,6 +635,29 @@ export const raffleWeeklyGrants = pgTable(
   }),
 );
 
+/**
+ * SOL payment rail (doc 11 + doc 13 §4): off-ledger receipts for SOL purchases
+ * of flex/convenience (Season Pass premium, premium cosmetics). NEVER touches
+ * the $SHINY double-entry ledger. The UNIQUE tx_sig is the idempotency arbiter:
+ * a confirmed signature grants exactly once.
+ */
+export const solPayments = pgTable("sol_payments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** On-chain signature of the confirmed transfer — UNIQUE, the replay guard. */
+  txSig: text("tx_sig").notNull().unique(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  /** "season_pass" | "cosmetic" (solProductKind). */
+  product: text("product").notNull(),
+  /** Cosmetic slug, or "premium" for the Season Pass. */
+  ref: text("ref").notNull(),
+  /** The unique per-intent reference echoed in the tx memo. */
+  reference: text("reference").notNull(),
+  lamports: bigint("lamports", { mode: "bigint" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Persisted city feed backing the ticker. */
 export const feedEvents = pgTable("feed_events", {
   id: uuid("id").primaryKey().defaultRandom(),

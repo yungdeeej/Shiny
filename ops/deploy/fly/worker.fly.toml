@@ -1,0 +1,53 @@
+# Trash Wars — Worker on Fly.io (primary host per docs/03).
+# Deploy:  fly deploy -c ops/deploy/fly/worker.fly.toml
+# Create:  fly apps create trash-wars-worker   (run once, per environment/org)
+#
+# The worker is the BullMQ consumer + scheduler: withdrawal signer (30 min),
+# deposit poller fallback (60 s), proof-of-reserves snapshot (10 min), weekly
+# burn, telemetry/alerts. NO public port — it is not internet-reachable.
+#
+# This is the ONLY process that holds spending keys (hot wallet + mint authority).
+
+app = "trash-wars-worker"
+primary_region = "iad"        # co-locate with Postgres/Redis and the api
+
+[build]
+  dockerfile = "../../../services/worker/Dockerfile"
+  # Build/deploy from the repo root (the image copies the whole workspace).
+
+[env]
+  NODE_ENV = "production"
+  BETA_MODE = "0"
+  LOG_LEVEL = "info"
+  SOLANA_CLUSTER = "mainnet-beta"
+
+# ── Secrets — `fly secrets set -a trash-wars-worker KEY=value ...`
+#
+#    REDIS_URL                    redis://…  (same instance as the api)
+#    DATABASE_URL                 postgres://…  (same db as the api)
+#    SOLANA_RPC_URL               https://mainnet.helius-rpc.com/?api-key=…
+#    SHINY_MINT                   <mainnet $SHINY mint>
+#    DEPOSIT_ADDRESS              <hot-wallet $SHINY ATA>
+#    MULTISIG_ATA                 <Squads multisig $SHINY ATA>
+#    HELIUS_API_KEY               <Helius key>
+#    HELIUS_WEBHOOK_SECRET        <matches the api's value>
+#    SERVER_SEED_ENCRYPTION_KEY   <same 32-byte hex as the api — seed encrypt/decrypt>
+#    REVENUE_WALLET               <revenue/SOL wallet>
+#    DISCORD_ADMIN_WEBHOOK_URL    <admin alert webhook>
+#    SENTRY_DSN                   <worker Sentry project DSN>
+#
+#    WORKER-ONLY SIGNING KEYS (never set these on the api):
+#    HOT_WALLET_KEYPAIR_PATH      path to a mounted keypair file, OR…
+#    HOT_WALLET_KEYPAIR           the keypair JSON/base58 as a secret
+#    MINT_AUTHORITY_KEYPAIR_PATH  path to mint-authority keypair file, OR…
+#    MINT_AUTHORITY_KEYPAIR       the mint-authority keypair as a secret
+#    (If you use *_PATH, mount the file via a Fly volume or write it from the
+#     secret at boot. Hot wallet is capped at ~48h of withdrawal volume — doc 05.)
+
+# No [http_service] / [[services]]: the worker exposes no ports. Fly supervises
+# the process; liveness is observed via the BullMQ heartbeat → audit_log and the
+# proof-of-reserves snapshot freshness (see docs/ops/MONITORING.md).
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"            # queue consumer; bump if burn/snapshot jobs spike

@@ -5,7 +5,14 @@
  */
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { PASS, passClaimRequest, type PassState } from "@trash-wars/shared";
+import {
+  PASS,
+  passClaimRequest,
+  solConfirmRequest,
+  type PassState,
+  type SolBuyResponse,
+  type SolConfirmResponse,
+} from "@trash-wars/shared";
 import {
   passChallengeProgress,
   passChallenges,
@@ -13,10 +20,19 @@ import {
   passProgress,
   passRewards,
   seasonPasses,
+  solPayments,
   users,
+  wallets,
 } from "@trash-wars/db";
 import { and, eq, inArray } from "../core/orm.js";
-import { conflict, forbidden, notFound, notImplemented } from "../core/errors.js";
+import { badRequest, conflict, forbidden, notFound, notImplemented } from "../core/errors.js";
+import {
+  buildSolPayment,
+  getSolRail,
+  priceLamports,
+  readMemoRef,
+  verifySolPayment,
+} from "../core/sol-payments.js";
 import {
   PASS_SEASON,
   applyReward,
@@ -25,6 +41,27 @@ import {
   levelForXp,
 } from "../core/pass.js";
 import { requireAuth, requireTos } from "./session.js";
+
+/** The user's primary wallet address — the payer the SOL rail binds against. */
+async function primaryWallet(
+  ctx: FastifyInstance["ctx"],
+  userId: string,
+): Promise<string | null> {
+  const rows = await ctx.db.select().from(wallets).where(eq(wallets.userId, userId));
+  const primary = rows.find((w) => w.isPrimary) ?? rows[0];
+  return primary?.address ?? null;
+}
+
+/** Grant the season pass premium flag idempotently (no-op if already premium). */
+async function grantPremium(ctx: FastifyInstance["ctx"], userId: string, txSig: string): Promise<void> {
+  await ctx.db
+    .insert(seasonPasses)
+    .values({ userId, season: PASS_SEASON, premium: true, txSig })
+    .onConflictDoUpdate({
+      target: [seasonPasses.userId, seasonPasses.season],
+      set: { premium: true },
+    });
+}
 
 export default async function passModule(app: FastifyInstance): Promise<void> {
   const ctx = app.ctx;
@@ -115,9 +152,36 @@ export default async function passModule(app: FastifyInstance): Promise<void> {
 
   app.post("/pass/buy", async (request) => {
     const user = requireTos(request);
+    const rail = getSolRail();
+    if (rail.config.enabled && rail.config.revenueWallet) {
+      // SOL rail configured: doc 11's unsigned-transfer → confirm flow. Returns an
+      // intent the wallet signs+sends; /pass/confirm verifies + grants premium.
+      const payer = await primaryWallet(ctx, user.id);
+      if (!payer) throw badRequest("NO_WALLET", "link a primary wallet before SOL purchases");
+      const price = await priceLamports(ctx.db, "season_pass", "premium");
+      const built = await buildSolPayment({
+        payer,
+        product: "season_pass",
+        ref: price.ref,
+        lamports: price.lamports,
+        revenueWallet: rail.config.revenueWallet,
+        rpc: rail.rpc,
+      });
+      const response: SolBuyResponse = {
+        product: "season_pass",
+        ref: price.ref,
+        priceSol: price.priceSol,
+        lamports: price.lamports,
+        revenueWallet: rail.config.revenueWallet,
+        reference: built.reference,
+        memo: built.memo,
+        serializedTx: built.serializedTx,
+        expiresAt: built.expiresAt,
+      };
+      return response;
+    }
     if (!ctx.env.beta) {
-      // Devnet/mainnet: doc 11's SOL-confirm flow (unsigned transfer → confirm
-      // by tx signature) lands with the real chain provider.
+      // No SOL rail and not beta: premium is SOL-rail only — configure REVENUE_WALLET.
       throw notImplemented("premium pass is SOL-rail only outside beta — not wired yet");
     }
     // Beta rail: premium granted free with a BETA-labeled receipt. Idempotent —
@@ -137,6 +201,90 @@ export default async function passModule(app: FastifyInstance): Promise<void> {
       .where(and(eq(seasonPasses.userId, user.id), eq(seasonPasses.season, PASS_SEASON)))
       .limit(1);
     return { ok: true, premium: true, receipt: existing[0]?.txSig ?? null, alreadyOwned: true };
+  });
+
+  app.post("/pass/confirm", async (request) => {
+    const user = requireTos(request);
+    const { txSig, reference } = solConfirmRequest.parse(request.body);
+    const rail = getSolRail();
+    if (!rail.config.enabled || !rail.config.revenueWallet) {
+      throw notImplemented("SOL rail not configured in beta");
+    }
+
+    // Fast idempotent replay on a known signature.
+    const seen = await ctx.db
+      .select()
+      .from(solPayments)
+      .where(eq(solPayments.txSig, txSig))
+      .limit(1);
+    if (seen[0]) {
+      const response: SolConfirmResponse = {
+        granted: true,
+        product: "season_pass",
+        ref: seen[0].ref,
+        txSig,
+        alreadyGranted: true,
+      };
+      return response;
+    }
+
+    const payer = await primaryWallet(ctx, user.id);
+    if (!payer) throw badRequest("NO_WALLET", "link a primary wallet before SOL purchases");
+
+    const memoRef = await readMemoRef(rail.rpc, txSig);
+    if (!memoRef || memoRef.product !== "season_pass") {
+      throw badRequest("PAYMENT_UNVERIFIED", "not a season-pass SOL payment");
+    }
+    if (memoRef.reference !== reference) {
+      throw badRequest("PAYMENT_UNVERIFIED", "reference mismatch");
+    }
+    const price = await priceLamports(ctx.db, "season_pass", "premium");
+
+    const result = await verifySolPayment({
+      txSig,
+      reference,
+      expectedPayer: payer,
+      expectedLamports: price.lamports,
+      revenueWallet: rail.config.revenueWallet,
+      rpc: rail.rpc,
+    });
+    if (!result.ok) {
+      throw badRequest("PAYMENT_UNVERIFIED", `SOL payment not verified: ${result.reason}`);
+    }
+
+    // Record the receipt idempotently — the unique tx_sig is the grant arbiter.
+    const recorded = await ctx.db
+      .insert(solPayments)
+      .values({
+        txSig,
+        userId: user.id,
+        product: "season_pass",
+        ref: price.ref,
+        reference,
+        lamports: BigInt(price.lamports),
+      })
+      .onConflictDoNothing({ target: solPayments.txSig })
+      .returning();
+    if (!recorded[0]) {
+      const response: SolConfirmResponse = {
+        granted: true,
+        product: "season_pass",
+        ref: price.ref,
+        txSig,
+        alreadyGranted: true,
+      };
+      return response;
+    }
+
+    await grantPremium(ctx, user.id, txSig);
+    const response: SolConfirmResponse = {
+      granted: true,
+      product: "season_pass",
+      ref: price.ref,
+      txSig,
+      alreadyGranted: false,
+    };
+    return response;
   });
 
   app.post("/pass/claim", async (request) => {

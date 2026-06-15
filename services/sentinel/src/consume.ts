@@ -25,7 +25,14 @@ export const feedEventSchema = z.object({
 });
 export type FeedEvent = z.infer<typeof feedEventSchema>;
 
-export type StoryKind = "jackpot" | "death" | "confiscation" | "raffle" | "burn";
+export type StoryKind =
+  | "jackpot"
+  | "death"
+  | "confiscation"
+  | "raffle"
+  | "burn"
+  | "mint"
+  | "faction-war";
 
 export interface StoryEvent {
   kind: StoryKind;
@@ -85,6 +92,15 @@ export function handleFeedEvent(raw: unknown): StoryEvent | null {
       return { kind: "raffle", ...base };
     case "burn":
       return { kind: "burn", ...base };
+    case "mint":
+      // mint waves are always newsworthy (scarcity events drive the burn)
+      return { kind: "mint", ...base };
+    case "patrol":
+      // a heavy patrol push reads as faction warfare — only the big ones.
+      if (evt.amountBand !== undefined && BIG_BAND.test(evt.amountBand)) {
+        return { kind: "faction-war", ...base };
+      }
+      return null;
     default:
       return null;
   }

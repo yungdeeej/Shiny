@@ -1,0 +1,40 @@
+# Trash Wars — Docker build context exclusions.
+# Keep the build context lean: the api/worker images copy the whole workspace
+# (shared workspace deps) then `pnpm install --frozen-lockfile`, so node_modules
+# and build artifacts must never ship into the context.
+
+# Dependencies (reinstalled inside the image from pnpm-lock.yaml)
+node_modules
+**/node_modules
+
+# Build / framework output
+.next
+**/.next
+out
+**/out
+dist
+**/dist
+build
+**/build
+
+# Local data (PGlite beta store, sqlite checkpoints, sim output)
+.data
+**/.data
+ops/launch/out
+
+# VCS + CI
+.git
+.github
+
+# Env files — secrets are injected at runtime via Fly/Vercel/GitHub, never baked in
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Logs and OS cruft
+*.log
+**/*.log
+.DS_Store
+coverage
+**/coverage

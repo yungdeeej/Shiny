@@ -24,6 +24,12 @@ export interface AppContext {
 export interface BuildContextOptions {
   compliance?: ComplianceProvider;
   logger?: pino.Logger;
+  /**
+   * Inject a ready-made ChainProvider, bypassing createChainProvider. The worker
+   * uses this to wire the real SolanaChainProvider (it holds the signing keys);
+   * the API never sets it, so its default (stub/devnet) is unchanged.
+   */
+  chainOverride?: ChainProvider;
 }
 
 export async function buildContext(env: Env, opts: BuildContextOptions = {}): Promise<AppContext> {
@@ -34,14 +40,16 @@ export async function buildContext(env: Env, opts: BuildContextOptions = {}): Pr
   await migrateDb(db);
   const ledger = new LedgerService(db);
   const accounts = await ledger.ensureSystemAccounts();
-  const chain = createChainProvider({
-    BETA_MODE: env.beta ? "1" : "0",
-    BETA_STUB_HOLDING: env.betaStubHolding.toString(),
-    SOLANA_RPC_URL: env.solanaRpcUrl,
-    SHINY_MINT: env.shinyMint,
-    DEPOSIT_ADDRESS: env.depositAddress,
-    MULTISIG_ATA: env.multisigAta,
-  });
+  const chain =
+    opts.chainOverride ??
+    createChainProvider({
+      BETA_MODE: env.beta ? "1" : "0",
+      BETA_STUB_HOLDING: env.betaStubHolding.toString(),
+      SOLANA_RPC_URL: env.solanaRpcUrl,
+      SHINY_MINT: env.shinyMint,
+      DEPOSIT_ADDRESS: env.depositAddress,
+      MULTISIG_ATA: env.multisigAta,
+    });
   const bus = new GameBus();
 
   const ctx: AppContext = {

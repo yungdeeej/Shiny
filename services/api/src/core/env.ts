@@ -39,6 +39,15 @@ const rawEnv = z.object({
   SHINY_MINT: z.string().optional(),
   MULTISIG_ATA: z.string().optional(),
 
+  // Worker custody (the worker signs; the API never holds keys). All optional so
+  // beta still boots with none set. Keypair files are Solana CLI JSON byte arrays.
+  HOT_WALLET_KEYPAIR_PATH: z.string().optional(),
+  MINT_AUTHORITY_KEYPAIR_PATH: z.string().optional(),
+  CORE_COLLECTION_ADDRESS: z.string().optional(),
+  CHARACTER_MANIFEST_PATH: z.string().optional(),
+  PRIORITY_FEE_MICROLAMPORTS: z.coerce.number().int().default(50_000),
+  DISCORD_ADMIN_WEBHOOK_URL: z.string().optional(),
+
   RATE_LIMIT_MAX: z.coerce.number().int().default(300),
   LOG_LEVEL: z.string().default("info"),
 });
@@ -68,6 +77,12 @@ export interface Env {
   solanaRpcUrl: string | undefined;
   shinyMint: string | undefined;
   multisigAta: string | undefined;
+  hotWalletKeypairPath: string | undefined;
+  mintAuthorityKeypairPath: string | undefined;
+  coreCollectionAddress: string | undefined;
+  characterManifestPath: string | undefined;
+  priorityFeeMicroLamports: number;
+  discordAdminWebhookUrl: string | undefined;
   rateLimitMax: number;
   logLevel: string;
 }
@@ -99,6 +114,12 @@ export function loadEnv(overrides: Record<string, string | undefined> = {}): Env
     solanaRpcUrl: parsed.SOLANA_RPC_URL,
     shinyMint: parsed.SHINY_MINT,
     multisigAta: parsed.MULTISIG_ATA,
+    hotWalletKeypairPath: parsed.HOT_WALLET_KEYPAIR_PATH,
+    mintAuthorityKeypairPath: parsed.MINT_AUTHORITY_KEYPAIR_PATH,
+    coreCollectionAddress: parsed.CORE_COLLECTION_ADDRESS,
+    characterManifestPath: parsed.CHARACTER_MANIFEST_PATH,
+    priorityFeeMicroLamports: parsed.PRIORITY_FEE_MICROLAMPORTS,
+    discordAdminWebhookUrl: parsed.DISCORD_ADMIN_WEBHOOK_URL,
     rateLimitMax: parsed.RATE_LIMIT_MAX,
     logLevel: parsed.LOG_LEVEL,
   };

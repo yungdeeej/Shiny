@@ -1,0 +1,73 @@
+# Trash Wars — API on Fly.io (primary host per docs/03).
+# Deploy:  fly deploy -c ops/deploy/fly/api.fly.toml
+# Create:  fly apps create trash-wars-api   (run once, per environment/org)
+#
+# The API is the public Fastify service (auth, bank, game, public stats, ws).
+# It needs Postgres + Redis + chain-READ config. It must NOT hold signing keys
+# (hot wallet / mint authority live only on the worker — see doc 05).
+
+app = "trash-wars-api"
+primary_region = "iad"        # co-locate with the Fly Postgres + Upstash Redis
+
+[build]
+  dockerfile = "../../../services/api/Dockerfile"
+  # Build context is the repo root (the image copies the whole workspace).
+  # Run `fly deploy` from the repo root so the context resolves correctly.
+
+# ── Non-secret defaults. Secrets are injected via `fly secrets set` (below) and
+#    take precedence; never put a token amount, key, URL with creds, or DSN here.
+[env]
+  NODE_ENV = "production"
+  BETA_MODE = "0"             # prod is custodial: real db/redis/chain required
+  API_PORT = "4000"
+  LOG_LEVEL = "info"
+  SOLANA_CLUSTER = "mainnet-beta"
+  WEB_ORIGIN = "https://trashwars.gg"        # CORS origin — set to your web domain
+  # Bank policy mirrors .env.production.example; override per-env if needed.
+  WITHDRAWAL_FEE_BPS = "500"
+  MIN_WITHDRAWAL = "5000000000"
+  AUTO_PAY_DAILY_LIMIT = "250000000000"
+  GLOBAL_DAILY_WITHDRAWAL_CAP = "5000000000000"
+
+# ── Secrets to set with `fly secrets set -a trash-wars-api KEY=value ...`
+#    (encrypted at rest, injected as env at boot; changing one restarts the app):
+#
+#    DATABASE_URL                 postgres://… (Fly Postgres / Neon, with creds)
+#    REDIS_URL                    redis://…    (Upstash / Fly Redis, with creds)
+#    SOLANA_RPC_URL               https://mainnet.helius-rpc.com/?api-key=…
+#    SHINY_MINT                   <mainnet $SHINY mint address>
+#    DEPOSIT_ADDRESS              <hot-wallet $SHINY ATA — for proof-of-reserves reads>
+#    MULTISIG_ATA                 <Squads multisig $SHINY ATA — reserve reads>
+#    HELIUS_API_KEY               <Helius dedicated-plan key>
+#    HELIUS_WEBHOOK_SECRET        <shared secret the /webhooks/helius handler verifies>
+#    SERVER_SEED_ENCRYPTION_KEY   <32-byte hex — encrypts mission server seeds; NEVER in git>
+#    REVENUE_WALLET               <wallet that receives SOL/revenue, if wired>
+#    DISCORD_ADMIN_WEBHOOK_URL    <admin alert channel webhook>
+#    SENTRY_DSN                   <api Sentry project DSN>
+#
+#    DO NOT set on the API:  HOT_WALLET_KEYPAIR / MINT_AUTHORITY_KEYPAIR
+#    (those are worker-only — keep signing keys out of the public service).
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = false   # custodial backend: keep warm, do not scale to zero
+  auto_start_machines = true
+  min_machines_running = 1     # raise to ≥2 for HA before opening deposits
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  # Container-level health check on the Fastify /health route.
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "15s"
+    method = "get"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"               # tsx transpile + Fastify; bump to 2gb if RSS climbs
